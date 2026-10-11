@@ -1,0 +1,10 @@
+[package]
+name = "pixl-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pixl-core = { path = "../pixl-core" }
+pixl-gfx = { path = "../pixl-gfx" }

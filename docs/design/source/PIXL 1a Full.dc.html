@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><meta name="design_doc_mode" content="canvas"><link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet"><style>body{margin:0;background:#E7E4DE;font-family:'Geist',system-ui,sans-serif;color:#161616}a{color:#161616}a:hover{color:#FF5A1F}</style></helmet>
+<div style="padding:48px 52px 64px;display:flex;flex-direction:column;gap:36px">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font:700 28px 'Geist';letter-spacing:-.03em">PIXL</span><span style="width:10px;height:10px;background:#FF5A1F;border-radius:2px"></span><span style="font:500 11px 'Geist Mono';color:#6E6A63">1A · ПОЛНЫЙ ДИЗАЙН · 900 × 560</span></div>
+    <p style="margin:0;font:400 14px/1.5 'Geist';color:#4A4741;text-wrap:pretty">Все экраны кликабельны: вкладки каналов, плитки эффектов открывают свой редактор в главном окне, волну можно рисовать мышью, пресет в шапке открывает браузер, ASSIGN включает назначение макро. Оранжевая ступенчатая линия всегда показывает то, что реально сыграет чип; серый пунктир — идеальную кривую.</p>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:44px 40px">
+    <sc-for list="{{ screens }}" as="s" hint-placeholder-count="11">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:baseline;gap:10px"><span style="font:600 10.5px 'Geist Mono';padding:3px 7px;border-radius:5px;background:#161616;color:#fff">{{ s.id }}</span><span style="font:600 13px 'Geist'">{{ s.t }}</span><span style="font:400 12px 'Geist';color:#6E6A63">{{ s.d }}</span></div>
+        <div style="border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.06),0 18px 40px -18px rgba(0,0,0,.25)">
+          <dc-import name="PIXL" channel="{{ s.ch }}" focus="{{ s.focus }}" overlay="{{ s.ov }}" chip="{{ s.chip }}" hint-size="900px,560px"></dc-import>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const S = [
+      ['01', 'Wave', 'рисование формы волны', 'wave'],
+      ['02', 'Pulse 1', 'скважность и гармоники', 'p1'],
+      ['03', 'Noise', 'LFSR-регистр и период', 'noise'],
+      ['04', 'NES-режим', 'третий канал становится треугольником', 'wave', 'none', 'none', 'NES'],
+      ['05', 'Sweep', 'редактор открыт из плитки', 'wave', 'sweep'],
+      ['06', 'Vibrato', 'задержка, нарастание, форма', 'wave', 'vibrato'],
+      ['07', 'Crush', 'разрядность и частота дискретизации', 'wave', 'crush'],
+      ['08', 'Glide', 'портаменто между нотами', 'p1', 'glide'],
+      ['09', 'Unison', 'голоса, расстройка, панорама', 'p2', 'unison'],
+      ['10', 'Браузер пресетов', 'открывается по клику на пресет', 'wave', 'none', 'browser'],
+      ['11', 'Назначение макро', 'цели макро 2 подсвечены на плитках', 'wave', 'none', 'macro']
+    ];
+    return { screens: S.map(([id, t, d, ch, focus = 'none', ov = 'none', chip = 'GB']) => ({ id, t, d, ch, focus, ov, chip })) };
+  }
+}
+</script>
+</body>
+</html>

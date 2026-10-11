@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet"><style>body{margin:0;background:#E7E4DE;font-family:'Geist',system-ui,sans-serif;color:#161616}a{color:#161616}a:hover{color:#FF5A1F}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:600 10px 'Geist Mono',monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}.dv-tname{font:600 13px/1.2 'Geist',sans-serif;color:#1a1a1a}.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:600 10.5px 'Geist Mono',monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 12px/1.3 'Geist',sans-serif;color:rgba(0,0,0,.6)}.dv-card{max-width:100%;border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.06),0 18px 40px -18px rgba(0,0,0,.25);overflow:hidden}.dv-opt:target .dv-oid{background:#FF5A1F;color:#fff}.dv-card *{white-space:nowrap;flex-shrink:0}.dv-next{margin:26px 0 0;font:12px/1.5 'Geist',sans-serif;color:rgba(0,0,0,.55)}</style></helmet>
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Гибриды <a class="dv-oid" href="#1a">1a</a> + <a class="dv-oid" href="#1c">1c</a></span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="2a"><div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Раскладка <a class="dv-oid" href="#1a">1a</a> в корпусе <a class="dv-oid" href="#1c">1c</a>: большой холст, плитки эффектов с цветными энкодерами</div>
+<div class="dv-card" style="width:900px;height:560px;background:#DCD9D3;padding:18px;box-sizing:border-box">
+  <div style="width:100%;height:100%;background:#EEECE8;border-radius:16px;box-shadow:inset 0 1px 0 #fff,0 2px 0 #C6C2BA;padding:16px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:12px">
+    <div style="display:flex;align-items:center;gap:14px">
+      <span style="font:700 15px 'Geist Mono';letter-spacing:.12em">PIXL</span>
+      <div style="display:flex;align-items:center;gap:10px;background:#fff;border-radius:999px;padding:5px 6px 5px 12px;box-shadow:inset 0 0 0 1px #DCD8D0">
+        <span style="font:500 10px 'Geist Mono';color:#6E6A63">LEAD / 014</span><span style="font:600 12.5px 'Geist'">Hyrule Fanfare</span>
+        <div style="display:flex;gap:2px"><span style="width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:10px">‹</span><span style="width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:10px">›</span></div>
+      </div>
+      <div style="flex:1 1 auto"></div>
+      <div style="display:flex;gap:6px">
+        <span style="padding:7px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63">P1</span>
+        <span style="padding:7px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63">P2</span>
+        <span style="padding:7px 10px;border-radius:8px;background:#FF5A1F;box-shadow:0 1px 0 #B83A0C;font:600 10px 'Geist Mono';transform:translateY(1px)">WAVE</span>
+        <span style="padding:7px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63">NOISE</span>
+      </div>
+      <div style="display:flex;gap:12px;font:500 10px 'Geist Mono';color:#6E6A63;padding-left:6px"><span>NES</span><span style="color:#161616;display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:#FF5A1F"></span>GB</span><span>FREE</span></div>
+    </div>
+    <div style="position:relative;background:#fff;border-radius:10px;box-shadow:inset 0 0 0 1px #DCD8D0;overflow:hidden;height:252px">
+      <svg width="822" height="250" viewBox="0 0 822 250" style="display:block;margin:1px">
+        <path d="{{ e.dots }}" fill="#E7E4DD"></path>
+        <path d="{{ e.bars }}" fill="#FF5A1F" fill-opacity="0.12"></path>
+        <path d="{{ e.line }}" stroke="#FF5A1F" stroke-width="3" fill="none"></path>
+        <path d="{{ e.hot }}" fill="#161616"></path>
+      </svg>
+      <div style="position:absolute;left:{{ e.tipX }}px;top:{{ e.tipY }}px;background:#161616;color:#fff;font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px">STEP 12 · 13/15</div>
+      <div style="position:absolute;left:12px;top:10px;font:500 10px 'Geist Mono';color:#6E6A63">WAVE ● 32×4</div>
+      <div style="position:absolute;right:10px;top:8px;display:flex;gap:4px;font:500 10px 'Geist Mono'">
+        <span style="padding:4px 8px;border-radius:5px;background:#161616;color:#fff">✎ DRAW</span><span style="padding:4px 8px;border-radius:5px;background:#F1EFEA">╱ LINE</span><span style="padding:4px 8px;border-radius:5px;background:#F1EFEA">∿ SMOOTH</span><span style="padding:4px 8px;border-radius:5px;background:#F1EFEA">TRI</span><span style="padding:4px 8px;border-radius:5px;background:#F1EFEA">SAW</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) 128px;gap:10px;flex:1">
+      <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="4">
+        <div style="background:#F7F6F3;border-radius:10px;box-shadow:0 2px 0 #CFCBC3;padding:12px;display:flex;gap:12px;align-items:center">
+          <div style="position:relative;width:52px;height:52px;border-radius:50%;background:{{ t.color }};box-shadow:0 3px 0 rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.35)"><div style="position:absolute;left:50%;top:50%;width:3px;height:42%;margin-left:-1.5px;background:{{ t.tick }};border-radius:2px;transform-origin:50% 0;transform:rotate({{ t.rot }}deg)"></div></div>
+          <div style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center;font:600 10px 'Geist Mono';letter-spacing:.08em"><span>{{ t.name }}</span><span style="width:7px;height:7px;border-radius:50%;background:{{ t.on }}"></span></div>
+            <svg width="100%" height="26" viewBox="0 0 150 40" preserveAspectRatio="none"><path d="{{ t.viz }}" stroke="#161616" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"></path></svg>
+            <div style="display:flex;align-items:baseline;gap:5px"><span style="font:600 18px 'Geist';letter-spacing:-.02em">{{ t.big }}</span><span style="font:500 9.5px 'Geist Mono';color:#6E6A63">{{ t.unit }}</span></div>
+          </div>
+        </div>
+      </sc-for>
+      <div style="background:#161616;color:#fff;border-radius:10px;box-shadow:0 2px 0 #000;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+        <span style="font:600 10px 'Geist Mono';letter-spacing:.08em;color:#A9A49A">UNISON</span>
+        <div style="display:flex;gap:4px"><span style="flex:1;height:20px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:20px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:20px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:20px;border-radius:4px;background:#3A3936"></span></div>
+        <div style="display:flex;align-items:baseline;gap:5px"><span style="font:600 18px 'Geist'">3</span><span style="font:500 9.5px 'Geist Mono';color:#A9A49A">· 14 C</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2b"><div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Железка <a class="dv-oid" href="#1c">1c</a> с широким дисплеем из <a class="dv-oid" href="#1a">1a</a>: волна во всю ширину, энкодеры и клавиатура с глайдом</div>
+<div class="dv-card" style="width:900px;height:560px;background:#DCD9D3;padding:18px;box-sizing:border-box">
+  <div style="width:100%;height:100%;background:#EEECE8;border-radius:16px;box-shadow:inset 0 1px 0 #fff,0 2px 0 #C6C2BA;padding:18px 22px;box-sizing:border-box;display:flex;flex-direction:column;gap:14px">
+    <div style="display:flex;align-items:center;gap:12px">
+      <span style="font:700 15px 'Geist Mono';letter-spacing:.12em">PIXL</span>
+      <span style="font:400 10px 'Geist Mono';color:#6E6A63">CH-1</span>
+      <div style="flex:1 1 auto"></div>
+      <div style="display:flex;gap:6px">
+        <span style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63"><svg width="16" height="8" viewBox="0 0 28 10"><path d="M1 9V1H6V9H27" fill="none" stroke="#161616" stroke-width="2"></path></svg>P1</span>
+        <span style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63"><svg width="16" height="8" viewBox="0 0 28 10"><path d="M1 9V1H14V9H27" fill="none" stroke="#161616" stroke-width="2"></path></svg>P2</span>
+        <span style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#FF5A1F;box-shadow:0 1px 0 #B83A0C;font:600 10px 'Geist Mono';transform:translateY(1px)"><svg width="16" height="8" viewBox="0 0 28 10"><path d="M1 5H4V2H8V1H12V4H16V8H20V9H24V5H27" fill="none" stroke="#161616" stroke-width="2"></path></svg>WAVE</span>
+        <span style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;font:500 10px 'Geist Mono';color:#6E6A63"><svg width="16" height="8" viewBox="0 0 28 10"><path d="M1 6H3V2H6V8H8V3H11V9H14V1H16V7H19V4H22V8H24V2H27" fill="none" stroke="#161616" stroke-width="2"></path></svg>NOISE</span>
+      </div>
+      <div style="flex:1 1 auto"></div>
+      <div style="display:flex;gap:12px;font:500 10px 'Geist Mono';color:#6E6A63"><span>NES</span><span style="color:#161616;display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:#FF5A1F"></span>GB</span><span>FREE</span></div>
+    </div>
+    <div style="position:relative;background:#fff;border-radius:10px;box-shadow:inset 0 0 0 1px #DCD8D0;padding:28px 0 0;overflow:hidden">
+      <div style="position:absolute;left:12px;right:12px;top:9px;display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63"><span>014 · HYRULE FANFARE</span><span>‹ BROWSE ›</span></div>
+      <svg width="806" height="250" viewBox="0 0 806 250" style="display:block;margin:0 auto">
+        <path d="{{ g2.dots }}" fill="#E7E4DD"></path>
+        <path d="{{ g2.bars }}" fill="#FF5A1F" fill-opacity="0.12"></path>
+        <path d="{{ g2.line }}" stroke="#FF5A1F" stroke-width="3" fill="none"></path>
+        <path d="{{ g2.hot }}" fill="#161616"></path>
+      </svg>
+      <div style="position:absolute;left:{{ g2.tipX }}px;top:{{ g2.tipY }}px;margin-top:28px;background:#161616;color:#fff;font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px">STEP 12 · 13/15</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:0 10px">
+      <sc-for list="{{ knobs }}" as="k" hint-placeholder-count="5">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="position:relative;width:{{ k.size }}px;height:{{ k.size }}px;transform:scale(.8);border-radius:50%;background:{{ k.color }};box-shadow:0 3px 0 rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.35)">
+            <div style="position:absolute;left:50%;top:50%;width:3px;height:42%;margin-left:-1.5px;background:{{ k.tick }};border-radius:2px;transform-origin:50% 0;transform:rotate({{ k.rot }}deg)"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font:600 10px 'Geist Mono';letter-spacing:.08em">{{ k.name }}</span><span style="font:400 10px 'Geist Mono';color:#6E6A63">{{ k.val }}</span></div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="position:relative;display:flex;gap:3px;height:54px;margin-top:auto">
+      <sc-for list="{{ keys2 }}" as="key" hint-placeholder-count="25">
+        <div style="flex:1 1 0;border-radius:0 0 6px 6px;background:{{ key.bg }};box-shadow:0 2px 0 #C9C5BC"></div>
+      </sc-for>
+      <svg width="806" height="30" viewBox="0 0 806 30" style="position:absolute;left:0;top:-30px"><path d="M{{ gl.g1 }} 26 C{{ gl.gm }} 26 {{ gl.gm }} 4 {{ gl.g2 }} 4" fill="none" stroke="#FF5A1F" stroke-width="2" stroke-dasharray="3 3"></path><text x="{{ gl.g2 }}" dx="10" y="8" style="font:500 9px 'Geist Mono'" fill="#6E6A63">GLIDE 90MS</text></svg>
+    </div>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Дальше: «<a class="dv-oid" href="#2a">2a</a>, но с клавиатурой из <a class="dv-oid" href="#2b">2b</a>» · «сделать <a class="dv-oid" href="#2b">2b</a> кликабельным, чтобы рисовать волну» · «экран браузера пресетов для <a class="dv-oid" href="#2a">2a</a>»</p>
+</section>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">PIXL — четыре направления. Герой каждого: форма волны из 32 шагов × 16 уровней, которую рисуют мышью</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Canvas — волна на весь экран, как дисплей Pro-Q; эффекты как живые плитки</div>
+<div class="dv-card" style="width:900px;height:560px;background:#F7F6F3;display:flex;flex-direction:column">
+  <div style="height:52px;display:flex;align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid #E2DFD8">
+    <div style="display:flex;align-items:baseline;gap:8px"><span style="font:700 18px 'Geist';letter-spacing:-.02em">PIXL</span><span style="width:7px;height:7px;background:#FF5A1F;border-radius:1px"></span></div>
+    <div style="flex:1 1 auto;min-width:0;flex-shrink:1;display:flex;justify-content:center">
+      <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E2DFD8;border-radius:999px;padding:6px 8px 6px 14px">
+        <span style="font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em">LEAD / 014</span>
+        <span style="font:600 13px 'Geist'">Hyrule Fanfare</span>
+        <div style="display:flex;gap:2px"><span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:10px">‹</span><span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:10px">›</span></div>
+      </div>
+    </div>
+    <div style="display:flex;background:#ECE9E3;border-radius:8px;padding:3px;font:500 11px 'Geist Mono'">
+      <span style="padding:5px 10px;border-radius:6px;color:#6E6A63">NES</span>
+      <span style="padding:5px 10px;border-radius:6px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08)">GB</span>
+      <span style="padding:5px 10px;border-radius:6px;color:#6E6A63">FREE</span>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;padding:14px 20px 0">
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;color:#6E6A63;font:500 11px 'Geist Mono'"><svg width="18" height="10" viewBox="0 0 18 10"><path d="M1 9V1H5V9H17" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg>PULSE 1</div>
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;color:#6E6A63;font:500 11px 'Geist Mono'"><svg width="18" height="10" viewBox="0 0 18 10"><path d="M1 9V1H9V9H17" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg>PULSE 2</div>
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;background:#161616;color:#fff;font:500 11px 'Geist Mono'"><svg width="18" height="10" viewBox="0 0 18 10"><path d="M1 5H3V2H6V1H9V3H11V7H13V9H16V5H17" fill="none" stroke="#FF5A1F" stroke-width="1.5"></path></svg>WAVE</div>
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;color:#6E6A63;font:500 11px 'Geist Mono'"><svg width="18" height="10" viewBox="0 0 18 10"><path d="M1 6H2V2H4V8H5V3H7V9H9V1H10V7H12V4H14V8H15V2H17" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg>NOISE</div>
+    <div style="flex:1"></div>
+    <div style="display:flex;gap:4px;font:500 10px 'Geist Mono';color:#6E6A63">
+      <span style="padding:5px 9px;border:1px solid #161616;color:#161616;border-radius:6px">✎ DRAW</span>
+      <span style="padding:5px 9px;border:1px solid #E2DFD8;border-radius:6px">╱ LINE</span>
+      <span style="padding:5px 9px;border:1px solid #E2DFD8;border-radius:6px">∿ SMOOTH</span>
+      <span style="padding:5px 9px;border:1px solid #E2DFD8;border-radius:6px">⇅ INVERT</span>
+    </div>
+  </div>
+  <div style="position:relative;margin:12px 20px 0;height:282px;background:#fff;border:1px solid #E2DFD8;border-radius:10px;overflow:hidden">
+    <svg width="858" height="280" viewBox="0 0 858 280" style="display:block">
+      <path d="{{ a.grid }}" stroke="#EFEDE8" stroke-width="1" fill="none"></path>
+      <path d="{{ a.bars }}" fill="#FF5A1F" fill-opacity="0.14"></path>
+      <path d="{{ a.line }}" stroke="#FF5A1F" stroke-width="2.5" fill="none" stroke-linejoin="miter"></path>
+      <path d="{{ a.hot }}" fill="#FF5A1F"></path>
+      <line x1="0" y1="140" x2="858" y2="140" stroke="#161616" stroke-opacity="0.25" stroke-dasharray="2 4"></line>
+    </svg>
+    <div style="position:absolute;left:{{ a.tipX }}px;top:{{ a.tipY }}px;background:#161616;color:#fff;font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px;white-space:nowrap">STEP 12 · 13/15</div>
+    <div style="position:absolute;left:14px;top:12px;font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em">32 × 4-BIT WAVE RAM</div>
+    <div style="position:absolute;right:12px;top:10px;display:flex;gap:4px">
+      <span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px;background:#F1EFEA">12.5%</span><span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px;background:#F1EFEA">25%</span><span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px;background:#F1EFEA">TRI</span><span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:5px;background:#F1EFEA">SAW</span>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) 150px;gap:10px;padding:14px 20px 18px;flex:1">
+    <div style="background:#fff;border:1px solid #E2DFD8;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em"><span>SWEEP</span><span style="width:8px;height:8px;border-radius:50%;background:#FF5A1F"></span></div>
+      <svg width="100%" height="40" viewBox="0 0 150 40" preserveAspectRatio="none"><path d="M0 6 C40 6 50 34 150 34" stroke="#161616" stroke-width="1.5" fill="none"></path><circle cx="0" cy="6" r="3" fill="#FF5A1F"></circle></svg>
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font:600 22px 'Geist';letter-spacing:-.02em">−12</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">ST · 180 MS</span></div>
+    </div>
+    <div style="background:#fff;border:1px solid #E2DFD8;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em"><span>VIBRATO</span><span style="width:8px;height:8px;border-radius:50%;background:#FF5A1F"></span></div>
+      <svg width="100%" height="40" viewBox="0 0 150 40" preserveAspectRatio="none"><path d="M0 20 H40 Q48 6 56 20 T72 20 T88 20 T104 20 T120 20 T136 20 T152 20" stroke="#161616" stroke-width="1.5" fill="none"></path></svg>
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font:600 22px 'Geist';letter-spacing:-.02em">5.5</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">HZ · 18 C</span></div>
+    </div>
+    <div style="background:#fff;border:1px solid #E2DFD8;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em"><span>CRUSH</span><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid #C9C5BC"></span></div>
+      <svg width="100%" height="40" viewBox="0 0 150 40" preserveAspectRatio="none"><path d="M0 34 H20 V28 H40 V20 H60 V12 H80 V6 H100 V12 H120 V22 H140 V30 H150" stroke="#161616" stroke-width="1.5" fill="none"></path></svg>
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font:600 22px 'Geist';letter-spacing:-.02em">6</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">BIT · 11 KHZ</span></div>
+    </div>
+    <div style="background:#fff;border:1px solid #E2DFD8;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em"><span>GLIDE</span><span style="width:8px;height:8px;border-radius:50%;background:#FF5A1F"></span></div>
+      <svg width="100%" height="40" viewBox="0 0 150 40" preserveAspectRatio="none"><path d="M0 32 H50 C80 32 80 8 110 8 H150" stroke="#161616" stroke-width="1.5" fill="none"></path></svg>
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font:600 22px 'Geist';letter-spacing:-.02em">90</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">MS · LEGATO</span></div>
+    </div>
+    <div style="background:#161616;color:#fff;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="font:500 10px 'Geist Mono';color:#A9A49A;letter-spacing:.06em">UNISON</div>
+      <div style="display:flex;gap:4px"><span style="flex:1;height:22px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:22px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:22px;border-radius:4px;background:#FF5A1F"></span><span style="flex:1;height:22px;border-radius:4px;background:#3A3936"></span></div>
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font:600 22px 'Geist'">3</span><span style="font:500 10px 'Geist Mono';color:#A9A49A">VOICES · 14 C</span></div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Orbit — волна в полярных координатах, тянешь лучи от центра; браузер пресетов всегда открыт</div>
+<div class="dv-card" style="width:900px;height:560px;background:#FBFAF8;display:grid;grid-template-columns:220px 1fr 250px">
+  <div style="border-right:1px solid #E8E5DF;padding:20px 0;display:flex;flex-direction:column;gap:18px;background:#F4F2EE">
+    <div style="padding:0 20px;display:flex;align-items:center;gap:8px"><span style="font:700 18px 'Geist';letter-spacing:-.02em">PIXL</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">v1.0</span></div>
+    <div style="margin:0 14px;padding:8px 10px;background:#fff;border:1px solid #E2DFD8;border-radius:8px;font:400 12px 'Geist';color:#8A867E">Поиск пресетов…</div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px;padding:0 14px;font:500 10px 'Geist Mono'">
+      <span style="padding:4px 8px;border-radius:999px;background:#161616;color:#fff">LEAD</span><span style="padding:4px 8px;border-radius:999px;border:1px solid #DAD7D0">BASS</span><span style="padding:4px 8px;border-radius:999px;border:1px solid #DAD7D0">ARP</span><span style="padding:4px 8px;border-radius:999px;border:1px solid #DAD7D0">DRUM</span><span style="padding:4px 8px;border-radius:999px;border:1px solid #DAD7D0">SFX</span>
+    </div>
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ presets }}" as="p" hint-placeholder-count="9">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 20px;background:{{ p.bg }};border-left:2px solid {{ p.bar }}">
+          <svg width="22" height="12" viewBox="0 0 22 12"><path d="{{ p.icon }}" fill="none" stroke="{{ p.ic }}" stroke-width="1.4"></path></svg>
+          <span style="font:500 12.5px 'Geist';flex:1">{{ p.name }}</span>
+          <span style="font:400 10px 'Geist Mono';color:#8A867E">{{ p.chip }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center">
+    <div style="position:absolute;top:20px;left:24px;right:24px;display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;flex-direction:column;gap:2px"><span style="font:600 16px 'Geist';letter-spacing:-.01em">Hyrule Fanfare</span><span style="font:500 10px 'Geist Mono';color:#6E6A63">WAVE CH · GAME BOY</span></div>
+      <div style="display:flex;gap:6px"><span style="width:28px;height:28px;border-radius:50%;background:#161616;color:#fff;display:grid;place-items:center;font:600 10px 'Geist Mono'">W</span><span style="width:28px;height:28px;border-radius:50%;border:1px solid #DAD7D0;display:grid;place-items:center;font:600 10px 'Geist Mono';color:#6E6A63">P1</span><span style="width:28px;height:28px;border-radius:50%;border:1px solid #DAD7D0;display:grid;place-items:center;font:600 10px 'Geist Mono';color:#6E6A63">P2</span><span style="width:28px;height:28px;border-radius:50%;border:1px solid #DAD7D0;display:grid;place-items:center;font:600 10px 'Geist Mono';color:#6E6A63">N</span></div>
+    </div>
+    <svg width="350" height="350" viewBox="0 0 380 380" style="margin-top:56px">
+      <circle cx="190" cy="190" r="175" fill="none" stroke="#EBE8E2"></circle>
+      <circle cx="190" cy="190" r="118" fill="none" stroke="#EBE8E2" stroke-dasharray="2 4"></circle>
+      <circle cx="190" cy="190" r="62" fill="none" stroke="#EBE8E2"></circle>
+      <path d="{{ b.spokes }}" stroke="#EBE8E2"></path>
+      <path d="{{ b.poly }}" fill="#FF5A1F" fill-opacity="0.12" stroke="#FF5A1F" stroke-width="2.5" stroke-linejoin="round"></path>
+      <path d="{{ b.handle }}" stroke="#161616" stroke-width="1.5"></path>
+      <circle cx="{{ b.hx }}" cy="{{ b.hy }}" r="6" fill="#fff" stroke="#161616" stroke-width="2"></circle>
+      <circle cx="190" cy="190" r="44" fill="#161616"></circle>
+      <text x="190" y="187" text-anchor="middle" fill="#fff" style="font:600 18px 'Geist'">C4</text>
+      <text x="190" y="203" text-anchor="middle" fill="#A9A49A" style="font:500 9px 'Geist Mono'">261.6 HZ</text>
+    </svg>
+    <div style="display:flex;gap:16px;font:500 10px 'Geist Mono';color:#6E6A63;margin-top:4px"><span>SHIFT · ПОВЕРНУТЬ ФАЗУ</span><span>ALT · СИММЕТРИЯ</span></div>
+  </div>
+  <div style="border-left:1px solid #E8E5DF;padding:72px 22px 20px;display:flex;flex-direction:column;gap:22px">
+    <sc-for list="{{ sliders }}" as="s" hint-placeholder-count="4">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 11px 'Geist Mono';letter-spacing:.06em">{{ s.name }}</span><span style="font:600 13px 'Geist'">{{ s.val }}</span></div>
+        <div style="position:relative;height:6px;background:#ECE9E3;border-radius:3px"><div style="position:absolute;left:0;top:0;bottom:0;width:{{ s.pct }}%;background:#FF5A1F;border-radius:3px"></div><div style="position:absolute;top:-5px;left:{{ s.pct }}%;width:16px;height:16px;margin-left:-8px;border-radius:50%;background:#fff;border:2px solid #161616"></div></div>
+        <span style="font:400 10px 'Geist Mono';color:#8A867E">{{ s.sub }}</span>
+      </div>
+    </sc-for>
+    <div style="margin-top:auto;padding-top:16px;border-top:1px solid #E8E5DF;display:flex;justify-content:space-between;align-items:center">
+      <span style="font:500 11px 'Geist Mono';letter-spacing:.06em">UNISON</span>
+      <div style="display:flex;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#FF5A1F"></span><span style="width:10px;height:10px;border-radius:50%;background:#FF5A1F"></span><span style="width:10px;height:10px;border-radius:50%;background:#FF5A1F"></span><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #C9C5BC"></span></div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Object — плагин как железка в духе TE: дисплей, 4 цветных энкодера-макро, клавиатура с глайдом</div>
+<div class="dv-card" style="width:900px;height:560px;background:#DCD9D3;padding:18px;box-sizing:border-box">
+  <div style="width:100%;height:100%;background:#EEECE8;border-radius:16px;box-shadow:inset 0 1px 0 #fff,0 2px 0 #C6C2BA;padding:22px 26px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font:700 15px 'Geist Mono';letter-spacing:.12em">PIXL</span><span style="font:400 10px 'Geist Mono';color:#6E6A63">CH-1 CHIPTUNE SYNTHESIZER</span></div>
+      <div style="display:flex;gap:14px;align-items:center;font:500 10px 'Geist Mono';color:#6E6A63"><span>NES</span><span style="color:#161616;display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:#FF5A1F"></span>GB</span><span>FREE</span></div>
+    </div>
+    <div style="display:flex;gap:18px">
+      <div style="flex:1;background:#fff;border-radius:10px;box-shadow:inset 0 0 0 1px #DCD8D0;padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63"><span>014 · HYRULE FANFARE</span><span>WAVE ● 32×4</span></div>
+        <svg width="560" height="150" viewBox="0 0 560 150"><path d="{{ c.dots }}" fill="#E4E1DA"></path><path d="{{ c.line }}" fill="none" stroke="#FF5A1F" stroke-width="3"></path></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2,64px);gap:10px;align-content:start">
+        <div style="height:56px;border-radius:10px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;display:flex;flex-direction:column;justify-content:space-between;padding:8px;box-sizing:border-box;font:500 10px 'Geist Mono';color:#6E6A63"><span>P1</span><svg width="28" height="10" viewBox="0 0 28 10"><path d="M1 9V1H6V9H27" fill="none" stroke="#161616" stroke-width="1.5"></path></svg></div>
+        <div style="height:56px;border-radius:10px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;display:flex;flex-direction:column;justify-content:space-between;padding:8px;box-sizing:border-box;font:500 10px 'Geist Mono';color:#6E6A63"><span>P2</span><svg width="28" height="10" viewBox="0 0 28 10"><path d="M1 9V1H14V9H27" fill="none" stroke="#161616" stroke-width="1.5"></path></svg></div>
+        <div style="height:56px;border-radius:10px;background:#FF5A1F;box-shadow:0 1px 0 #B83A0C;display:flex;flex-direction:column;justify-content:space-between;padding:8px;box-sizing:border-box;font:600 10px 'Geist Mono';color:#161616;transform:translateY(1px)"><span>WAVE</span><svg width="28" height="10" viewBox="0 0 28 10"><path d="M1 5H4V2H8V1H12V4H16V8H20V9H24V5H27" fill="none" stroke="#161616" stroke-width="1.5"></path></svg></div>
+        <div style="height:56px;border-radius:10px;background:#F7F6F3;box-shadow:0 2px 0 #C9C5BC;display:flex;flex-direction:column;justify-content:space-between;padding:8px;box-sizing:border-box;font:500 10px 'Geist Mono';color:#6E6A63"><span>NOISE</span><svg width="28" height="10" viewBox="0 0 28 10"><path d="M1 6H3V2H6V8H8V3H11V9H14V1H16V7H19V4H22V8H24V2H27" fill="none" stroke="#161616" stroke-width="1.2"></path></svg></div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:0 6px">
+      <sc-for list="{{ knobs }}" as="k" hint-placeholder-count="5">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px">
+          <div style="position:relative;width:{{ k.size }}px;height:{{ k.size }}px;border-radius:50%;background:{{ k.color }};box-shadow:0 3px 0 rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.35)">
+            <div style="position:absolute;left:50%;top:50%;width:3px;height:42%;margin-left:-1.5px;background:{{ k.tick }};border-radius:2px;transform-origin:50% 0;transform:rotate({{ k.rot }}deg)"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:2px"><span style="font:600 10px 'Geist Mono';letter-spacing:.08em">{{ k.name }}</span><span style="font:400 10px 'Geist Mono';color:#6E6A63">{{ k.val }}</span></div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="position:relative;display:flex;gap:3px;height:62px;margin-top:auto">
+      <sc-for list="{{ keys }}" as="key" hint-placeholder-count="21">
+        <div style="flex:1;border-radius:0 0 6px 6px;background:{{ key.bg }};box-shadow:0 2px 0 #C9C5BC"></div>
+      </sc-for>
+      <svg width="846" height="30" viewBox="0 0 846 30" style="position:absolute;left:0;top:-30px"><path d="M{{ c.g1 }} 26 C{{ c.gm }} 26 {{ c.gm }} 4 {{ c.g2 }} 4" fill="none" stroke="#FF5A1F" stroke-width="2" stroke-dasharray="3 3"></path><text x="{{ c.g2 }}" dx="10" y="8" style="font:500 9px 'Geist Mono'" fill="#6E6A63">GLIDE 90MS</text></svg>
+    </div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Morph Stack — волна во времени: рисуешь первый и последний кадр, PIXL строит морф; рядом кривая pitch sweep</div>
+<div class="dv-card" style="width:900px;height:560px;background:#F5F4F0;display:flex;flex-direction:column">
+  <div style="display:flex;align-items:center;gap:20px;padding:18px 24px">
+    <span style="font:700 18px 'Geist';letter-spacing:-.02em">PIXL</span>
+    <span style="font:500 12px 'Geist';color:#6E6A63">Lead / <span style="color:#161616">Hyrule Fanfare</span></span>
+    <div style="flex:1"></div>
+    <span style="font:500 10px 'Geist Mono';color:#6E6A63">MACRO</span>
+    <div style="display:flex;gap:6px"><span style="padding:5px 10px;border-radius:6px;background:#161616;color:#fff;font:500 10px 'Geist Mono'">A · BRIGHT</span><span style="padding:5px 10px;border-radius:6px;border:1px solid #DAD7D0;font:500 10px 'Geist Mono'">B · DIRT</span><span style="padding:5px 10px;border-radius:6px;border:1px solid #DAD7D0;font:500 10px 'Geist Mono'">C · MOTION</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 250px;gap:14px;padding:0 24px;flex:1">
+    <div style="position:relative;background:#fff;border-radius:12px;border:1px solid #E2DFD8;overflow:hidden">
+      <svg width="586" height="340" viewBox="0 0 586 340" style="display:block">
+        <path d="{{ d.back }}" fill="none" stroke="#C9C5BC" stroke-width="1.2"></path>
+        <path d="{{ d.ghost }}" fill="none" stroke="#161616" stroke-width="2"></path>
+        <path d="{{ d.frontFill }}" fill="#FF5A1F" fill-opacity="0.1"></path>
+        <path d="{{ d.front }}" fill="none" stroke="#FF5A1F" stroke-width="2.5"></path>
+        <path d="{{ d.rail }}" fill="none" stroke="#161616" stroke-opacity="0.3" stroke-dasharray="2 4"></path>
+      </svg>
+      <div style="position:absolute;left:18px;bottom:16px;display:flex;gap:8px;align-items:center;font:500 10px 'Geist Mono'"><span style="width:10px;height:3px;background:#FF5A1F"></span>КАДР 0 · АТАКА</div>
+      <div style="position:absolute;right:18px;top:16px;display:flex;gap:8px;align-items:center;font:500 10px 'Geist Mono'"><span style="width:10px;height:3px;background:#161616"></span>КАДР 7 · ХВОСТ</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="background:#fff;border-radius:12px;border:1px solid #E2DFD8;padding:14px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font:500 10px 'Geist Mono';color:#6E6A63"><span>PITCH SWEEP</span><span style="color:#161616">−12 ST</span></div>
+        <svg width="220" height="96" viewBox="0 0 220 96"><path d="M0 24H220M0 48H220M0 72H220" stroke="#F0EEE9"></path><path d="M4 12 C40 12 60 84 216 84" fill="none" stroke="#161616" stroke-width="2"></path><circle cx="4" cy="12" r="5" fill="#FF5A1F"></circle><circle cx="216" cy="84" r="5" fill="#fff" stroke="#161616" stroke-width="2"></circle><circle cx="58" cy="52" r="4" fill="#fff" stroke="#161616" stroke-width="1.5"></circle></svg>
+        <div style="display:flex;justify-content:space-between;font:400 10px 'Geist Mono';color:#8A867E"><span>0</span><span>180 MS</span></div>
+      </div>
+      <div style="background:#fff;border-radius:12px;border:1px solid #E2DFD8;padding:4px 14px">
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="4">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:10px 0;border-bottom:1px solid {{ r.line }}">
+            <span style="font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em">{{ r.name }}</span>
+            <span style="font:600 15px 'Geist';letter-spacing:-.01em">{{ r.val }} <span style="font:400 10px 'Geist Mono';color:#8A867E">{{ r.unit }}</span></span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px;padding:16px 24px 20px">
+    <span style="font:500 10px 'Geist Mono';color:#6E6A63">MORPH</span>
+    <div style="position:relative;flex:1;height:24px;display:flex;gap:3px">
+      <sc-for list="{{ frames }}" as="f" hint-placeholder-count="8"><div style="flex:1;border-radius:4px;background:{{ f.bg }}"></div></sc-for>
+    </div>
+    <span style="font:600 13px 'Geist'">240 <span style="font:400 10px 'Geist Mono';color:#8A867E">MS</span></span>
+    <span style="padding:5px 10px;border-radius:6px;border:1px solid #DAD7D0;font:500 10px 'Geist Mono'">LOOP</span>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Дальше: «развить <a class="dv-oid" href="#1a">1a</a> с полярной волной из <a class="dv-oid" href="#1b">1b</a>» · «сделать <a class="dv-oid" href="#1c">1c</a> интерактивным» · «тёмная версия <a class="dv-oid" href="#1d">1d</a>»</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const N = 32;
+    const W = Array.from({ length: N }, (_, i) => {
+      const t = (i / N) * Math.PI * 2;
+      const v = 7.5 + 7.5 * (0.62 * Math.sin(t) + 0.38 * Math.sign(Math.sin(2 * t + 0.4)));
+      return Math.max(0, Math.min(15, Math.round(v)));
+    });
+    const f = n => Math.round(n * 10) / 10;
+    const yOf = (v, y, h) => y + h - (v / 15) * h;
+    const step = (vals, x, y, w, h) => {
+      const sw = w / vals.length;
+      let d = `M${f(x)} ${f(yOf(vals[0], y, h))}`;
+      vals.forEach((v, i) => {
+        d += ` V${f(yOf(v, y, h))} H${f(x + (i + 1) * sw)}`;
+      });
+      return d;
+    };
+    // 1a
+    const AW = 858, AH = 280, pad = 30, ah = AH - pad * 2, sw = AW / N;
+    let grid = '';
+    for (let j = 0; j <= 15; j++) { const y = f(yOf(j, pad, ah)); grid += `M0 ${y}H${AW}`; }
+    for (let i = 0; i <= N; i += 4) grid += `M${f(i * sw)} 0V${AH}`;
+    let bars = '';
+    W.forEach((v, i) => { const x = i * sw + 2, y = yOf(v, pad, ah); bars += `M${f(x)} ${AH}V${f(y)}H${f(x + sw - 4)}V${AH}Z`; });
+    const hi = 11, hx = hi * sw, hy = yOf(W[hi], pad, ah);
+    const hot = `M${f(hx + 2)} ${AH}V${f(hy)}H${f(hx + sw - 2)}V${AH}Z`.replace(/V\S+H/, `V${f(hy)}H`);
+    const a = { grid, bars, line: step(W, 0, pad, AW, ah), hot: `M${f(hx + sw / 2 - 6)} ${f(hy - 6)}h12v12h-12Z`, tipX: f(hx + sw / 2 - 48), tipY: f(hy - 34) };
+    // 1b polar
+    const cx = 190, cy = 190, r0 = 62, k = 7.5;
+    const P = (ang, r) => `${f(cx + r * Math.cos(ang))} ${f(cy + r * Math.sin(ang))}`;
+    let poly = '', spokes = '';
+    W.forEach((v, i) => {
+      const a0 = (i / N) * Math.PI * 2 - Math.PI / 2, a1 = ((i + 1) / N) * Math.PI * 2 - Math.PI / 2, r = r0 + v * k;
+      poly += (i === 0 ? `M${P(a0, r)}` : ` L${P(a0, r)}`) + ` A${f(r)} ${f(r)} 0 0 1 ${P(a1, r)}`;
+      if (i % 4 === 0) spokes += `M${P(a0, r0)}L${P(a0, 175)}`;
+    });
+    poly += 'Z';
+    const bi = 6, ba = ((bi + 0.5) / N) * Math.PI * 2 - Math.PI / 2, br = r0 + W[bi] * k;
+    const b = { poly, spokes, handle: `M${P(ba, r0)}L${P(ba, br)}`, hx: f(cx + br * Math.cos(ba)), hy: f(cy + br * Math.sin(ba)) };
+    // 1c
+    let dots = '';
+    for (let i = 0; i < N; i++) for (let j = 0; j <= 15; j++) { const x = 8 + i * (544 / N) + 544 / N / 2, y = yOf(j, 8, 134); dots += `M${f(x - 1.2)} ${f(y - 1.2)}h2.4v2.4h-2.4Z`; }
+    const keyW = 846 / 21;
+    const c = { dots, line: step(W, 8, 8, 544, 134), g1: f(keyW * 7.5), g2: f(keyW * 11.5), gm: f(keyW * 9.5) };
+    // 1d morph stack
+    const sq = Array.from({ length: N }, (_, i) => (i < 8 ? 15 : 2));
+    const tri = Array.from({ length: N }, (_, i) => Math.round(7.5 + 7 * Math.sin((i / N) * Math.PI * 2)));
+    const layer = t => sq.map((v, i) => Math.round(v + (tri[i] - v) * t));
+    const L = 8, lw = 360, lh = 110, ox = 34, oy = 210;
+    let back = '';
+    for (let l = L - 2; l >= 1; l--) back += step(layer(l / (L - 1)), ox + l * 22, oy - l * 24, lw, lh) + ' ';
+    const fx = ox, fy = oy;
+    const fl = step(layer(0), fx, fy, lw, lh);
+    const d = {
+      back,
+      ghost: step(layer(1), ox + (L - 1) * 22, oy - (L - 1) * 24, lw, lh),
+      front: fl,
+      frontFill: fl + ` V${fy + lh} H${fx} Z`,
+      rail: `M${ox} ${oy + lh}L${ox + (L - 1) * 22} ${oy + lh - (L - 1) * 24}M${ox + lw} ${oy + lh}L${ox + lw + (L - 1) * 22} ${oy + lh - (L - 1) * 24}`
+    };
+    const ic = { p12: 'M1 11V1H4V11H21', p50: 'M1 11V1H11V11H21', tri: 'M1 11L6 1L11 11L16 1L21 11', wav: 'M1 6H4V2H8V1H11V4H14V9H17V11H21', noi: 'M1 7H3V2H5V10H7V4H9V11H11V1H13V8H15V5H17V9H19V3H21' };
+    const pl = [['Hyrule Fanfare', 'GB', 'wav', 1], ['Overworld 1-1', 'NES', 'p50'], ['Ocarina Lead', 'GB', 'tri'], ['Pocket Arp', 'GB', 'p12'], ['Castle Bass', 'NES', 'tri'], ['Coin Square', 'NES', 'p12'], ['Lavender Wave', 'GB', 'wav'], ['Power-Up', 'NES', 'p50'], ['Static Snare', 'NES', 'noi']];
+    const presets = pl.map(([name, chip, i, on]) => ({ name, chip, icon: ic[i], bg: on ? '#fff' : 'transparent', bar: on ? '#FF5A1F' : 'transparent', ic: on ? '#FF5A1F' : '#8A867E' }));
+    const sliders = [
+      { name: 'SWEEP', val: '−12 st', sub: '180 ms · вниз', pct: 62 },
+      { name: 'VIBRATO', val: '5.5 Hz', sub: 'глубина 18 c · задержка 120 ms', pct: 44 },
+      { name: 'CRUSH', val: '6 bit', sub: '11 kHz', pct: 70 },
+      { name: 'GLIDE', val: '90 ms', sub: 'только legato', pct: 30 }
+    ];
+    const knobs = [
+      { name: 'SWEEP', val: '−12 ST', color: '#FF5A1F', tick: '#161616', size: 74, rot: 220 },
+      { name: 'VIBRATO', val: '5.5 HZ', color: '#2A2A28', tick: '#fff', size: 74, rot: 150 },
+      { name: 'CRUSH', val: '6 BIT', color: '#FFFFFF', tick: '#161616', size: 74, rot: 250 },
+      { name: 'GLIDE', val: '90 MS', color: '#B9B5AD', tick: '#161616', size: 74, rot: 120 },
+      { name: 'UNISON', val: '3 · 14 C', color: '#F7F6F3', tick: '#FF5A1F', size: 52, rot: 200 }
+    ];
+    const keys = Array.from({ length: 21 }, (_, i) => ({ bg: i === 7 ? '#C9C5BC' : i === 11 ? '#FF5A1F' : '#FBFAF8' }));
+    const rows = [
+      { name: 'VIBRATO', val: '5.5', unit: 'HZ · 18 C', line: '#F0EEE9' },
+      { name: 'CRUSH', val: '6', unit: 'BIT · 11 KHZ', line: '#F0EEE9' },
+      { name: 'GLIDE', val: '90', unit: 'MS', line: '#F0EEE9' },
+      { name: 'UNISON', val: '3', unit: 'VOICES · 14 C', line: 'transparent' }
+    ];
+    const frames = Array.from({ length: 8 }, (_, i) => ({ bg: i === 0 ? '#FF5A1F' : i === 7 ? '#161616' : `rgba(22,22,22,${0.08 + i * 0.04})` }));
+    const cv = (CW, CH, pd, hiI) => {
+      const s = CW / N, h = CH - pd * 2;
+      let g = '', br = '', dt = '';
+      for (let j = 0; j <= 15; j++) g += `M0 ${f(yOf(j, pd, h))}H${CW}`;
+      for (let i = 0; i <= N; i += 8) g += `M${f(i * s)} 0V${CH}`;
+      W.forEach((v, i) => { const x = i * s + 2; br += `M${f(x)} ${CH}V${f(yOf(v, pd, h))}H${f(x + s - 4)}V${CH}Z`; });
+      for (let i = 0; i < N; i++) for (let j = 0; j <= 15; j++) { const x = i * s + s / 2, y = yOf(j, pd, h); dt += `M${f(x - 1.2)} ${f(y - 1.2)}h2.4v2.4h-2.4Z`; }
+      const X = hiI * s, Y = yOf(W[hiI], pd, h);
+      return { grid: g, bars: br, dots: dt, line: step(W, 0, pd, CW, h), hot: `M${f(X + s / 2 - 6)} ${f(Y - 6)}h12v12h-12Z`, tipX: f(X + s / 2 - 48), tipY: f(Y - 34) };
+    };
+    const e = cv(822, 250, 26, 11), g2 = cv(806, 250, 22, 11);
+    const tiles = [
+      { name: 'SWEEP', big: '−12', unit: 'ST · 180 MS', viz: 'M0 6 C40 6 50 34 150 34', color: '#FF5A1F', tick: '#161616', rot: 220, on: '#FF5A1F' },
+      { name: 'VIBRATO', big: '5.5', unit: 'HZ · 18 C', viz: 'M0 20 H40 Q48 6 56 20 T72 20 T88 20 T104 20 T120 20 T136 20 T152 20', color: '#2A2A28', tick: '#fff', rot: 150, on: '#FF5A1F' },
+      { name: 'CRUSH', big: '6', unit: 'BIT · 11 KHZ', viz: 'M0 34 H20 V28 H40 V20 H60 V12 H80 V6 H100 V12 H120 V22 H140 V30 H150', color: '#FFFFFF', tick: '#161616', rot: 250, on: '#C9C5BC' },
+      { name: 'GLIDE', big: '90', unit: 'MS · LEGATO', viz: 'M0 32 H50 C80 32 80 8 110 8 H150', color: '#B9B5AD', tick: '#161616', rot: 120, on: '#FF5A1F' }
+    ];
+    const kw2 = 806 / 25;
+    const keys2 = Array.from({ length: 25 }, (_, i) => ({ bg: i === 9 ? '#C9C5BC' : i === 14 ? '#FF5A1F' : '#FBFAF8' }));
+    const gl = { g1: f(kw2 * 9.5), g2: f(kw2 * 14.5), gm: f(kw2 * 12) };
+    return { e, g2, tiles, keys2, gl, a, b, c, d, presets, sliders, knobs, keys, rows, frames };
+  }
+}
+</script>
+</body>
+</html>

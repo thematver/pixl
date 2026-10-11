@@ -1,0 +1,10 @@
+[package]
+name = "pixl-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "PIXL synthesis engine: chip-accurate, band-limited NES/GB/FREE voices"
+
+[dependencies]
+pixl-core = { path = "../pixl-core" }

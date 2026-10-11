@@ -1,0 +1,11 @@
+[package]
+name = "pixl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "PIXL shared definitions: parameter table, enums, presets, macros, GUI bridge contract"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

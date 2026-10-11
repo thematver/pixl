@@ -1,0 +1,67 @@
+{
+  "format": "pixl-library",
+  "version": 1,
+  "presets": [
+    {
+      "format": "pixl-preset",
+      "version": 1,
+      "name": "Hyrule Fanfare",
+      "category": "LEAD",
+      "number": 14,
+      "icon": "wav",
+      "tags": [
+        "GB",
+        "LEAD",
+        "WAVE"
+      ],
+      "description": {
+        "ru": "Яркий лид на самодельной волне, лёгкий sweep вниз на атаке и вибрато с задержкой.",
+        "en": "Bright lead on a hand-drawn wave with a gentle downward sweep on the attack and delayed vibrato."
+      },
+      "author": "PIXL Factory",
+      "params": {},
+      "macros": [
+        [
+          {
+            "target": "sweep_amt",
+            "depth": 0.1
+          },
+          {
+            "target": "uni_detune",
+            "depth": -0.1
+          }
+        ],
+        [
+          {
+            "target": "crush_bits",
+            "depth": -0.4
+          },
+          {
+            "target": "uni_detune",
+            "depth": 0.2
+          }
+        ],
+        [
+          {
+            "target": "vib_depth",
+            "depth": 0.3
+          },
+          {
+            "target": "glide_time",
+            "depth": 0.2
+          }
+        ],
+        [
+          {
+            "target": "uni_width",
+            "depth": 0.4
+          },
+          {
+            "target": "echo_mix",
+            "depth": 0.5
+          }
+        ]
+      ]
+    }
+  ]
+}

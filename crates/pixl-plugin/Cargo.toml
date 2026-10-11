@@ -1,0 +1,30 @@
+[package]
+name = "pixl-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "PIXL plugin glue: nih-plug parameters, state, MIDI, process loop, preset store and editor bridge"
+
+[lib]
+name = "pixl"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["gui"]
+# The native PIXL editor (pixl-gui on pixl-gfx). Without it the plugin has no custom editor
+# and hosts show their generic parameter UI; everything else is identical.
+gui = ["dep:pixl-gui"]
+
+[dependencies]
+nih_plug = { workspace = true }
+pixl-core = { path = "../pixl-core" }
+pixl-dsp = { path = "../pixl-dsp" }
+pixl-fx = { path = "../pixl-fx" }
+pixl-gui = { path = "../pixl-gui", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+# Exactly the revision nih-plug uses (types must unify): the CLAP entry in src/entry.rs and
+# the in-process CLAP host in tests/clap_host.rs.
+clap-sys = { git = "https://github.com/micahrj/clap-sys.git", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156" }

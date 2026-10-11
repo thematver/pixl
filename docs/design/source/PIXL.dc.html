@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet"><style>body{margin:0;background:#E7E4DE;font-family:'Geist',system-ui,sans-serif;color:#161616}a{color:#161616}a:hover{color:#FF5A1F}[data-pixl] *{box-sizing:border-box;white-space:nowrap}</style></helmet>
+<div data-pixl="1" style="position:relative;width:900px;height:560px;background:#F7F6F3;display:flex;flex-direction:column;overflow:hidden;border-radius:14px;user-select:none;font-family:'Geist',sans-serif;color:#161616">
+  <div style="height:52px;flex:none;display:flex;align-items:center;padding:0 20px;border-bottom:1px solid #E2DFD8">
+    <div style="flex:1 1 0;display:flex;align-items:center;gap:8px"><span style="font:700 18px 'Geist';letter-spacing:-.02em">PIXL</span><span style="width:7px;height:7px;background:#FF5A1F;border-radius:1px"></span></div>
+    <div onClick="{{ toggleBrowser }}" style="display:flex;align-items:center;gap:10px;background:{{ pillBg }};border:1px solid {{ pillBd }};border-radius:999px;padding:5px 6px 5px 14px;cursor:pointer">
+      <span style="font:500 10px 'Geist Mono';color:#6E6A63;letter-spacing:.06em">{{ preset.cat }} / {{ preset.num }}</span>
+      <span style="font:600 13px 'Geist'">{{ preset.name }}</span>
+      <div style="display:flex;gap:2px"><span onClick="{{ prevPreset }}" style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:11px">‹</span><span onClick="{{ nextPreset }}" style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#F1EFEA;font-size:11px">›</span></div>
+    </div>
+    <div style="flex:1 1 0;display:flex;justify-content:flex-end;align-items:center;gap:14px">
+      <div style="display:flex;background:#ECE9E3;border-radius:8px;padding:3px;font:500 11px 'Geist Mono'">
+        <sc-for list="{{ chips }}" as="c" hint-placeholder-count="3"><span onClick="{{ c.click }}" style="padding:5px 10px;border-radius:6px;background:{{ c.bg }};color:{{ c.fg }};box-shadow:{{ c.sh }};cursor:pointer">{{ c.label }}</span></sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;width:44px"><div style="height:3px;background:#E2DFD8;border-radius:2px"><div style="width:72%;height:3px;background:#161616;border-radius:2px"></div></div><div style="height:3px;background:#E2DFD8;border-radius:2px"><div style="width:64%;height:3px;background:#161616;border-radius:2px"></div></div><span style="font:500 9px 'Geist Mono';color:#6E6A63">−6.2 DB</span></div>
+    </div>
+  </div>
+
+  <div style="flex:none;display:flex;align-items:center;gap:6px;padding:12px 20px 0;height:44px">
+    <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4">
+      <div onClick="{{ t.click }}" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;background:{{ t.bg }};color:{{ t.fg }};font:500 11px 'Geist Mono';cursor:pointer"><svg width="18" height="10" viewBox="0 0 18 10"><path d="{{ t.icon }}" fill="none" stroke="{{ t.ic }}" stroke-width="1.5"></path></svg>{{ t.label }}</div>
+    </sc-for>
+    <div style="flex:1 1 auto"></div>
+    <span style="font:500 10px 'Geist Mono';color:#6E6A63">{{ chipName }}</span>
+  </div>
+
+  <div style="position:relative;flex:none;margin:10px 20px 0;height:250px;background:#fff;border:1px solid #E2DFD8;border-radius:10px;overflow:hidden">
+    <svg width="858" height="248" viewBox="0 0 858 248" style="display:block;cursor:{{ heroCursor }};touch-action:none" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}">
+      <path d="{{ h.grid }}" stroke="#EFEDE8" stroke-width="1" fill="none"></path>
+      <path d="{{ h.base }}" stroke="#161616" stroke-opacity="0.28" stroke-width="1" stroke-dasharray="2 4" fill="none"></path>
+      <path d="{{ h.area }}" fill="#FF5A1F" fill-opacity="0.13"></path>
+      <path d="{{ h.ghost }}" stroke="#161616" stroke-opacity="0.38" stroke-width="1.5" stroke-dasharray="4 4" fill="none"></path>
+      <path d="{{ h.ink }}" stroke="#161616" stroke-width="1.5" fill="none" stroke-opacity="{{ h.inkOp }}"></path>
+      <path d="{{ h.main }}" stroke="#FF5A1F" stroke-width="2.5" fill="none"></path>
+      <path d="{{ h.dots }}" fill="#FF5A1F"></path>
+      <path d="{{ h.inkDots }}" fill="#fff" stroke="#161616" stroke-width="2"></path>
+    </svg>
+    <div style="position:absolute;left:14px;top:11px;display:flex;align-items:center;gap:10px">
+      <sc-if value="{{ isFocus }}" hint-placeholder-val="{{ false }}"><span onClick="{{ back }}" style="font:500 10px 'Geist Mono';padding:4px 8px;border-radius:5px;border:1px solid #E2DFD8;cursor:pointer">← {{ backLabel }}</span></sc-if>
+      <span style="font:600 10px 'Geist Mono';letter-spacing:.06em">{{ title }}</span>
+      <span style="font:400 10px 'Geist Mono';color:#6E6A63">{{ sub }}</span>
+    </div>
+    <div style="position:absolute;right:12px;top:9px;display:flex;gap:4px">
+      <sc-for list="{{ heroChips }}" as="c" hint-placeholder-count="4"><span onClick="{{ c.click }}" style="font:500 10px 'Geist Mono';padding:4px 8px;border-radius:5px;background:{{ c.bg }};color:{{ c.fg }};margin-left:{{ c.ml }}px;cursor:pointer">{{ c.label }}</span></sc-for>
+    </div>
+    <sc-for list="{{ labels }}" as="l" hint-placeholder-count="0"><div style="position:absolute;left:{{ l.x }}px;top:{{ l.y }}px;font:500 10px 'Geist Mono';color:{{ l.c }};background:{{ l.bg }};padding:{{ l.pad }};border-radius:5px;pointer-events:none">{{ l.t }}</div></sc-for>
+    <sc-if value="{{ isNoise }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;left:14px;right:14px;bottom:12px;display:flex;justify-content:space-between;align-items:flex-end">
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <span style="font:500 9px 'Geist Mono';color:#6E6A63">РЕГИСТР · ОТВОДЫ XOR</span>
+          <div style="display:flex;gap:2px"><sc-for list="{{ reg }}" as="r" hint-placeholder-count="15"><span style="width:14px;height:14px;border-radius:3px;background:{{ r.bg }};border:1.5px solid {{ r.bd }}"></span></sc-for></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+          <span style="font:500 9px 'Geist Mono';color:#6E6A63">ПЕРИОД · {{ periodLabel }}</span>
+          <div style="display:flex;gap:2px;align-items:flex-end"><sc-for list="{{ periods }}" as="p" hint-placeholder-count="16"><span onClick="{{ p.click }}" style="width:12px;height:{{ p.h }}px;border-radius:2px;background:{{ p.bg }};cursor:pointer"></span></sc-for></div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+
+  <div style="flex:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:12px 20px 0;height:122px">
+    <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="5">
+      <div onClick="{{ t.click }}" style="position:relative;background:{{ t.bg }};color:{{ t.fg }};border:{{ t.bd }};border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer">
+        <div style="display:flex;justify-content:space-between;align-items:center;font:500 10px 'Geist Mono';letter-spacing:.06em;color:{{ t.sub }}"><span>{{ t.name }}</span><span onClick="{{ t.toggle }}" style="width:16px;height:16px;display:grid;place-items:center;margin:-4px"><span style="width:8px;height:8px;border-radius:50%;background:{{ t.dot }};border:1.5px solid {{ t.dotBd }}"></span></span></div>
+        <svg width="100%" height="34" viewBox="0 0 150 40" preserveAspectRatio="none" style="opacity:{{ t.op }}"><path d="{{ t.viz }}" stroke="{{ t.fg }}" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"></path></svg>
+        <div style="display:flex;align-items:baseline;gap:6px;opacity:{{ t.op }}"><span style="font:600 21px 'Geist';letter-spacing:-.02em">{{ t.big }}</span><span style="font:500 9.5px 'Geist Mono';color:{{ t.sub }}">{{ t.unit }}</span></div>
+        <sc-if value="{{ t.hasBadge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-9px;right:10px;background:#FF5A1F;color:#161616;font:600 9.5px 'Geist Mono';padding:3px 6px;border-radius:5px">{{ t.badge }}</span></sc-if>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="flex:none;display:flex;align-items:center;gap:8px;padding:12px 20px 0">
+    <span style="font:500 10px 'Geist Mono';color:#6E6A63;width:48px">MACRO</span>
+    <sc-for list="{{ macros }}" as="m" hint-placeholder-count="4">
+      <div onClick="{{ m.click }}" style="flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;background:{{ m.bg }};border:1px solid {{ m.bd }};cursor:pointer">
+        <span style="font:600 10px 'Geist Mono';color:{{ m.numC }}">{{ m.n }}</span>
+        <span style="font:600 11px 'Geist';width:52px">{{ m.name }}</span>
+        <div style="flex:1 1 auto;height:4px;background:#E7E4DE;border-radius:2px"><div style="width:{{ m.val }}%;height:4px;background:{{ m.fill }};border-radius:2px"></div></div>
+        <span style="font:500 10px 'Geist Mono';width:20px;text-align:right">{{ m.val }}</span>
+      </div>
+    </sc-for>
+    <span onClick="{{ toggleAssign }}" style="font:500 10px 'Geist Mono';padding:8px 10px;border-radius:8px;background:{{ assignBg }};color:{{ assignFg }};cursor:pointer">{{ assignLabel }}</span>
+  </div>
+
+  <sc-if value="{{ isBrowser }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;right:0;top:52px;bottom:0;background:#F7F6F3;display:grid;grid-template-columns:170px minmax(0,1fr) 260px;border-top:1px solid #E2DFD8">
+      <div style="padding:16px 12px;border-right:1px solid #E2DFD8;display:flex;flex-direction:column;gap:2px">
+        <div style="padding:8px 10px;margin-bottom:10px;background:#fff;border:1px solid #E2DFD8;border-radius:8px;font:400 12px 'Geist';color:#8A867E">Поиск…</div>
+        <sc-for list="{{ cats }}" as="c" hint-placeholder-count="7">
+          <div style="display:flex;justify-content:space-between;padding:7px 10px;border-radius:7px;background:{{ c.bg }};color:{{ c.fg }}"><span style="font:500 12px 'Geist'">{{ c.name }}</span><span style="font:400 10px 'Geist Mono';color:{{ c.nc }}">{{ c.n }}</span></div>
+        </sc-for>
+        <div style="margin-top:auto;display:flex;flex-wrap:wrap;gap:4px">
+          <span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:999px;background:#161616;color:#fff">GB</span><span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:999px;border:1px solid #DAD7D0">NES</span><span style="font:500 10px 'Geist Mono';padding:4px 7px;border-radius:999px;border:1px solid #DAD7D0">★</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;padding:16px 0 0">
+        <div style="display:flex;justify-content:space-between;padding:0 18px 10px;font:500 10px 'Geist Mono';color:#6E6A63"><span>ВСЕ ПРЕСЕТЫ · 128</span><span>A–Z ↓</span></div>
+        <sc-for list="{{ plist }}" as="p" hint-placeholder-count="12">
+          <div onClick="{{ p.click }}" style="display:flex;align-items:center;gap:12px;padding:7px 18px;background:{{ p.bg }};border-left:2px solid {{ p.bar }};cursor:pointer">
+            <span style="font:400 10px 'Geist Mono';color:#8A867E;width:24px">{{ p.num }}</span>
+            <svg width="24" height="12" viewBox="0 0 22 12"><path d="{{ p.icon }}" fill="none" stroke="{{ p.ic }}" stroke-width="1.4"></path></svg>
+            <span style="font:500 12.5px 'Geist';flex:1 1 auto">{{ p.name }}</span>
+            <span style="font:400 10px 'Geist Mono';color:#6E6A63;width:44px">{{ p.cat }}</span>
+            <span style="font:400 10px 'Geist Mono';color:#6E6A63;width:28px">{{ p.chip }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="border-left:1px solid #E2DFD8;padding:18px;display:flex;flex-direction:column;gap:14px;background:#fff">
+        <div style="display:flex;flex-direction:column;gap:3px"><span style="font:500 10px 'Geist Mono';color:#6E6A63">{{ preset.cat }} / {{ preset.num }}</span><span style="font:600 20px 'Geist';letter-spacing:-.02em">{{ preset.name }}</span><span style="font:400 11px 'Geist';color:#6E6A63">PIXL Factory</span></div>
+        <div style="height:110px;border-radius:8px;background:#F7F6F3;display:grid;place-items:center"><svg width="200" height="70" viewBox="0 0 22 12" preserveAspectRatio="none"><path d="{{ preset.icon }}" fill="none" stroke="#FF5A1F" stroke-width="2" vector-effect="non-scaling-stroke"></path></svg></div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px"><sc-for list="{{ preset.tags }}" as="tg" hint-placeholder-count="3"><span style="font:500 10px 'Geist Mono';padding:4px 8px;border-radius:999px;border:1px solid #DAD7D0">{{ tg }}</span></sc-for></div>
+        <span style="font:400 12px/1.45 'Geist';color:#4A4741;white-space:normal">{{ preset.desc }}</span>
+        <div style="margin-top:auto;display:flex;gap:6px"><span onClick="{{ toggleBrowser }}" style="flex:1 1 auto;text-align:center;padding:10px;border-radius:8px;background:#161616;color:#fff;font:600 12px 'Geist';cursor:pointer">Загрузить</span><span onClick="{{ toggleBrowser }}" style="padding:10px 12px;border-radius:8px;border:1px solid #E2DFD8;font:500 10px 'Geist Mono';cursor:pointer">ESC</span></div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:900,&quot;height&quot;:560},&quot;channel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;p1&quot;,&quot;p2&quot;,&quot;wave&quot;,&quot;noise&quot;],&quot;default&quot;:&quot;wave&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;focus&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;sweep&quot;,&quot;vibrato&quot;,&quot;crush&quot;,&quot;glide&quot;,&quot;unison&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;overlay&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;browser&quot;,&quot;macro&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;chip&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;NES&quot;,&quot;GB&quot;,&quot;FREE&quot;],&quot;default&quot;:&quot;GB&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = {};
+  g(k, d) { const v = this.state[k]; if (v !== undefined) return v; const p = this.props[k]; return p !== undefined && p !== null && p !== '' ? p : d; }
+  act(o) { return e => { if (e && e.stopPropagation) e.stopPropagation(); this.setState(typeof o === 'function' ? o() : o); }; }
+  defWave() {
+    return Array.from({ length: 32 }, (_, i) => { const t = (i / 32) * Math.PI * 2; return Math.max(0, Math.min(15, Math.round(7.5 + 7.5 * (0.62 * Math.sin(t) + 0.38 * Math.sign(Math.sin(2 * t + 0.4)))))); });
+  }
+  wave() { return this.state.wave || this.defWave(); }
+  hit(e) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * 858, y = (e.clientY - r.top) / r.height * 248;
+    return { i: Math.max(0, Math.min(31, Math.floor(x / (858 / 32)))), v: Math.max(0, Math.min(15, Math.round((226 - y) / 180 * 15))) };
+  }
+  paint(e) {
+    const { i, v } = this.hit(e);
+    const tool = this.g('tool', 'draw');
+    let w;
+    if (tool === 'line' && this.start) {
+      w = this.snap.slice(); const s = this.start, n = Math.abs(i - s.i) || 1;
+      for (let k = 0; k <= Math.abs(i - s.i); k++) { const j = s.i + Math.sign(i - s.i) * k; w[j] = Math.round(s.v + (v - s.v) * (k / n)); }
+    } else {
+      w = this.wave().slice();
+      const a = this.lastPaint;
+      if (a != null && a !== i) { const av = w[a], n = Math.abs(i - a); for (let k = 1; k < n; k++) { const j = a + Math.sign(i - a) * k; w[j] = Math.round(av + (v - av) * (k / n)); } }
+      w[i] = v; this.lastPaint = i;
+    }
+    this.setState({ wave: w, last: i });
+  }
+  renderVals() {
+    const f = n => Math.round(n * 10) / 10;
+    const HW = 858, Y0 = 46, H = 180, B = Y0 + H, N = 32, SW = HW / N;
+    const A = '#FF5A1F', INK = '#161616', MUT = '#6E6A63';
+    const chip = this.g('chip', 'GB'), ch = this.g('channel', 'wave'), focus = this.g('focus', 'none'), overlay = this.g('overlay', 'none');
+    const duty = this.state.duty || { p1: 1, p2: 2 };
+    const on = this.state.on || { sweep: true, vibrato: true, crush: false, glide: true, unison: true };
+    const bits = this.g('bits', 6), rateI = this.g('rateI', 2), voices = this.g('voices', 3), period = this.g('period', 5), lfsr = this.g('lfsr', 'long');
+    const sweepDir = this.g('sweepDir', 'down'), vibShape = this.g('vibShape', 'sine'), glideMode = this.g('glideMode', 'legato');
+    const macroSel = this.g('macroSel', 1), presetI = this.g('presetI', 0), tool = this.g('tool', 'draw');
+    const W = this.wave(), last = this.g('last', 11);
+    const isTri = ch === 'wave' && chip === 'NES';
+    const mode = focus !== 'none' ? focus : isTri ? 'tri' : ch;
+    const yv = v => Y0 + H - (v / 15) * H;
+    const step = (vals, x0, w, y) => { const s = w / vals.length; let d = `M${f(x0)} ${f(y(vals[0]))}`; vals.forEach((v, i) => { d += `V${f(y(v))}H${f(x0 + (i + 1) * s)}`; }); return d; };
+    const poly = pts => pts.map((p, i) => (i ? 'L' : 'M') + f(p[0]) + ' ' + f(p[1])).join('');
+    const circ = (x, y, r) => `M${f(x - r)} ${f(y)}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`;
+    const stdGrid = (cols = 16, rows = 4) => { let g = ''; for (let j = 0; j <= rows; j++) g += `M0 ${f(Y0 + j * H / rows)}H${HW}`; for (let i = 1; i < cols; i++) g += `M${f(i * HW / cols)} ${Y0 - 6}V${B + 6}`; return g; };
+    const lab = (x, y, t, c = MUT) => ({ x: f(x), y: f(y), t, c, bg: 'transparent', pad: '0' });
+    const tip = (x, y, t) => ({ x: f(x), y: f(y), t, c: '#fff', bg: INK, pad: '4px 7px' });
+    const h = { grid: '', base: '', area: '', ghost: '', ink: '', main: '', dots: '', inkDots: '', inkOp: 1 };
+    const labels = []; let title = '', sub = '', heroChips = [];
+    const chipItem = (label, active, click, ml = 0) => ({ label, click, ml, bg: active ? INK : '#F1EFEA', fg: active ? '#fff' : INK });
+    const reg = [], periods = [];
+    const levelGrid = () => { let g = ''; for (let j = 0; j <= 15; j++) g += `M0 ${f(yv(j))}H${HW}`; for (let i = 0; i <= N; i += 4) g += `M${f(i * SW)} ${Y0 - 8}V${B + 8}`; return g; };
+    const barsOf = vals => vals.map((v, i) => `M${f(i * SW + 2)} ${B + 8}V${f(yv(v))}H${f(i * SW + SW - 2)}V${B + 8}Z`).join('');
+
+    if (mode === 'wave') {
+      title = '32 × 4-BIT WAVE RAM'; sub = 'рисуйте мышью';
+      h.grid = levelGrid(); h.area = barsOf(W); h.main = step(W, 0, HW, yv); h.base = `M0 ${f(yv(7.5))}H${HW}`;
+      const X = last * SW + SW / 2, Y = yv(W[last]);
+      h.inkDots = `M${f(X - 5)} ${f(Y - 5)}h10v10h-10Z`;
+      labels.push(tip(Math.min(HW - 110, Math.max(4, X - 48)), Y < 90 ? Y + 12 : Y - 32, `STEP ${last + 1} · ${W[last]}/15`));
+      const T = t => this.act({ tool: t });
+      const shape = fn => this.act(() => ({ wave: Array.from({ length: 32 }, (_, i) => Math.max(0, Math.min(15, Math.round(fn(i))))) }));
+      heroChips = [chipItem('✎ DRAW', tool === 'draw', T('draw')), chipItem('╱ LINE', tool === 'line', T('line')),
+        chipItem('∿ SMOOTH', false, this.act(() => ({ wave: W.map((v, i) => Math.round((W[(i + 31) % 32] + 2 * v + W[(i + 1) % 32]) / 4)) }))),
+        chipItem('⇅ INVERT', false, this.act(() => ({ wave: W.map(v => 15 - v) }))),
+        chipItem('SIN', false, shape(i => 7.5 + 7.5 * Math.sin(i / 32 * Math.PI * 2)), 10), chipItem('TRI', false, shape(i => i < 16 ? i : 31 - i)),
+        chipItem('SAW', false, shape(i => i / 2)), chipItem('SQR', false, shape(i => i < 16 ? 15 : 0))];
+    } else if (mode === 'tri') {
+      const T = Array.from({ length: 32 }, (_, i) => i < 16 ? 15 - i : i - 16);
+      title = 'NES 2A03 · TRIANGLE'; sub = 'фиксированная 4-бит форма, без громкости';
+      h.grid = levelGrid(); h.area = barsOf(T); h.ink = step(T, 0, HW, yv); h.inkOp = 0.8;
+      heroChips = [chipItem('🔒 LOCKED', false, null)];
+      heroChips[0].label = 'LOCKED';
+      labels.push(lab(HW / 2 - 120, B + 6, 'В режиме FREE форму можно нарисовать'));
+    } else if (mode === 'p1' || mode === 'p2') {
+      const D = [0.125, 0.25, 0.5, 0.75], di = duty[mode], d = D[di], cw = HW / 4, yH = Y0 + 24, yL = B - 40;
+      title = `${mode === 'p1' ? 'PULSE 1' : 'PULSE 2'} · DUTY ${d * 100}%`; sub = 'тяните фронт или выберите скважность';
+      h.grid = stdGrid(16, 4);
+      let p = `M0 ${yL}`; for (let c = 0; c < 4; c++) p += `V${yH}H${f(c * cw + d * cw)}V${yL}H${f((c + 1) * cw)}`;
+      h.main = p;
+      const amps = Array.from({ length: 32 }, (_, n) => Math.abs(Math.sin((n + 1) * Math.PI * d)) / (n + 1)); const mx = Math.max(...amps);
+      h.area = amps.map((a, n) => `M${f(n * SW + 3)} ${B + 8}V${f(B + 8 - (a / mx) * 120)}H${f(n * SW + SW - 3)}V${B + 8}Z`).join('');
+      h.base = `M${f(d * cw)} ${Y0 - 10}V${B + 8}`;
+      h.inkDots = circ(d * cw, (yH + yL) / 2, 6);
+      labels.push(tip(d * cw + 12, (yH + yL) / 2 - 12, `DUTY ${d * 100}%`), lab(12, B - 2, 'ГАРМОНИКИ'));
+      heroChips = D.map((x, i) => chipItem(`${x * 100}%`, i === di, this.act(() => ({ duty: { ...duty, [mode]: i } }))));
+    } else if (mode === 'noise') {
+      title = `NOISE · LFSR ${lfsr === 'long' ? '15' : '7'}-BIT`; sub = lfsr === 'long' ? 'белый шум · хэты, взрывы' : 'короткий цикл · металлический тон';
+      h.grid = stdGrid(16, 4);
+      let r = 0x7fff; const out = [];
+      for (let k = 0; k < 160; k++) { const b = (r ^ (r >> 1)) & 1; r = (r >> 1) | (b << 14); if (lfsr === 'short') r = (r & ~(1 << 6)) | (b << 6); out.push(~r & 1); }
+      const s = HW / 160, yH = Y0 + 16, yL = Y0 + 110;
+      let p = `M0 ${out[0] ? yH : yL}`; out.forEach((o, k) => { p += `V${o ? yH : yL}H${f((k + 1) * s)}`; }); h.main = p;
+      for (let k = 14; k >= 0; k--) { const bit = (r >> k) & 1, tap = k === 0 || k === 1 || (lfsr === 'short' && k === 6); reg.push({ bg: bit ? INK : '#fff', bd: tap ? A : bit ? INK : '#D6D2CA' }); }
+      for (let k = 0; k < 16; k++) periods.push({ h: 6 + k * 1.6, bg: k === period ? A : k < period ? '#C9C5BC' : '#ECE9E3', click: this.act({ period: k }) });
+      heroChips = [chipItem('LONG', lfsr === 'long', this.act({ lfsr: 'long' })), chipItem('SHORT', lfsr === 'short', this.act({ lfsr: 'short' }))];
+    } else if (mode === 'sweep') {
+      const sg = sweepDir === 'down' ? 1 : -1;
+      const px = t => 60 + t / 300 * (HW - 90), py = st => Y0 + (12 - st) / 24 * H;
+      const st = t => sg * (t < 180 ? 12 * Math.pow(1 - t / 180, 2) : 0);
+      title = 'PITCH SWEEP'; sub = 'пунктир — кривая, оранжевый — что сыграет чип (60 Гц)';
+      let g = ''; [12, 6, 0, -6, -12].forEach(s => { g += `M40 ${f(py(s))}H${HW}`; }); for (let t = 0; t <= 300; t += 50) g += `M${f(px(t))} ${Y0 - 6}V${B + 6}`; h.grid = g;
+      h.base = `M40 ${f(py(0))}H${HW}`;
+      const pts = []; for (let t = 0; t <= 300; t += 2) pts.push([px(t), py(st(t))]); h.ghost = poly(pts);
+      let p = `M${f(px(0))} ${f(py(st(0)))}`; for (let t = 0; t < 300; t += 16.67) p += `V${f(py(st(t)))}H${f(px(Math.min(300, t + 16.67)))}`; h.main = p;
+      h.dots = circ(px(0), py(st(0)), 6); h.inkDots = circ(px(180), py(0), 6) + circ(px(45), py(st(45)), 4.5);
+      labels.push(lab(10, py(12) - 6, '+12'), lab(14, py(0) - 6, '0'), lab(10, py(-12) - 6, '−12'));
+      for (let t = 0; t <= 300; t += 100) labels.push(lab(px(t) + 4, B + 6, t ? `${t} MS` : '0'));
+      labels.push(tip(px(180) + 12, py(0) - (sg > 0 ? 34 : -12), `180 MS · ${sg > 0 ? '−' : '+'}12 ST`));
+      heroChips = [chipItem('↓ DOWN', sweepDir === 'down', this.act({ sweepDir: 'down' })), chipItem('↑ UP', sweepDir === 'up', this.act({ sweepDir: 'up' })), chipItem('EXP', true, null, 10), chipItem('NES STEP', true, null)];
+    } else if (mode === 'vibrato') {
+      const px = t => 30 + t / 800 * (HW - 60), mid = Y0 + H / 2, py = c => mid - c / 25 * (H / 2 - 8);
+      const shp = x => vibShape === 'sine' ? Math.sin(x) : vibShape === 'tri' ? (2 / Math.PI) * Math.asin(Math.sin(x)) : Math.sign(Math.sin(x));
+      const c = t => { const env = t < 120 ? 0 : Math.min(1, (t - 120) / 150); return 18 * env * shp(2 * Math.PI * 5.5 * t / 1000); };
+      title = 'VIBRATO'; sub = '5.5 Гц · 18 центов · задержка 120 мс';
+      h.grid = stdGrid(16, 4); h.base = `M30 ${mid}H${HW - 30}M${f(px(120))} ${Y0 - 6}V${B + 6}M${f(px(270))} ${Y0 - 6}V${B + 6}`;
+      h.area = `M30 ${Y0 - 6}H${f(px(120))}V${B + 6}H30Z`;
+      const pts = []; for (let t = 0; t <= 800; t += 2) pts.push([px(t), py(c(t))]); h.ghost = poly(pts);
+      let p = `M30 ${f(py(c(0)))}`; for (let t = 0; t < 800; t += 16.67) p += `V${f(py(c(t)))}H${f(px(Math.min(800, t + 16.67)))}`; h.main = p;
+      h.inkDots = circ(px(120), mid, 5) + circ(px(270), py(18), 5);
+      labels.push(lab(px(0) + 6, B - 14, 'DELAY'), lab(px(120) + 6, B - 14, 'FADE-IN'), tip(px(270) + 10, py(18) - 30, '±18 C'), lab(HW - 70, B + 6, '800 MS'));
+      heroChips = ['sine', 'tri', 'square'].map(s => chipItem(s.toUpperCase(), vibShape === s, this.act({ vibShape: s })));
+    } else if (mode === 'crush') {
+      const R = [44.1, 22, 11, 5.5], HOLD = [128, 64, 32, 16][rateI], L = Math.pow(2, bits);
+      const px = x => 20 + x * (HW - 40), mid = Y0 + H / 2, py = s => mid - s * (H / 2 - 4);
+      const q = s => Math.round((s + 1) / 2 * (L - 1)) / (L - 1) * 2 - 1;
+      title = `BITCRUSH · ${bits} BIT · ${R[rateI]} KHZ`; sub = `${L} уровней`;
+      let g = ''; if (bits <= 5) { for (let j = 0; j < L; j++) g += `M0 ${f(py(j / (L - 1) * 2 - 1))}H${HW}`; } else g = stdGrid(16, 4); h.grid = g;
+      const pts = []; for (let k = 0; k <= 400; k++) pts.push([px(k / 400), py(Math.sin(k / 400 * Math.PI * 2))]); h.ghost = poly(pts);
+      let p = '', a = `M${f(px(0))} ${mid}`;
+      for (let k = 0; k < HOLD; k++) { const v = py(q(Math.sin(k / HOLD * Math.PI * 2))); p += (k ? 'V' + f(v) : `M${f(px(0))} ${f(v)}`) + `H${f(px((k + 1) / HOLD))}`; a += `V${f(v)}H${f(px((k + 1) / HOLD))}`; }
+      h.main = p; h.area = a + `V${mid}Z`; h.base = `M0 ${mid}H${HW}`;
+      heroChips = [...Array.from({ length: 8 }, (_, i) => chipItem(String(i + 1), bits === i + 1, this.act({ bits: i + 1 }))), ...R.map((r, i) => chipItem(`${r}K`, rateI === i, this.act({ rateI: i }), i ? 0 : 10))];
+    } else if (mode === 'glide') {
+      const lanes = 13, lh = H / lanes, ly = n => B - (n + 0.5) * lh, ms = 1000, px = t => 30 + t / ms * (HW - 60);
+      title = 'GLIDE / PORTAMENTO'; sub = glideMode === 'legato' ? 'только при legato-нотах' : 'на каждой ноте';
+      let g = ''; for (let j = 0; j <= lanes; j++) g += `M0 ${f(B - j * lh)}H${HW}`; for (let t = 0; t <= ms; t += 100) g += `M${f(px(t))} ${Y0}V${B}`; h.grid = g;
+      const n1 = [0, 380, 0], n2 = [380, 940, 7];
+      const rect = (a, b, n) => `M${f(px(a))} ${f(ly(n) - lh / 2 + 2)}H${f(px(b))}V${f(ly(n) + lh / 2 - 2)}H${f(px(a))}Z`;
+      h.area = rect(...n1) + rect(...n2); h.ink = h.area; h.inkOp = 0.5;
+      const gp = t => t < 380 ? 0 : t < 470 ? 7 * (1 - Math.pow(1 - (t - 380) / 90, 2)) : 7;
+      const pts = []; for (let t = 0; t <= 940; t += 2) pts.push([px(t), ly(gp(t))]); h.ghost = poly(pts);
+      let p = `M${f(px(0))} ${f(ly(0))}`; for (let t = 0; t < 940; t += 16.67) p += `V${f(ly(gp(t)))}H${f(px(Math.min(940, t + 16.67)))}`; h.main = p;
+      h.dots = circ(px(380), ly(0), 5); h.inkDots = circ(px(470), ly(7), 5);
+      labels.push(lab(px(0) + 6, ly(0) - 22, 'C4'), lab(px(380) + 6, ly(7) - 22, 'G4'), tip(px(470) + 10, ly(7) + 10, '90 MS'));
+      heroChips = [chipItem('ALWAYS', glideMode === 'always', this.act({ glideMode: 'always' })), chipItem('LEGATO', glideMode === 'legato', this.act({ glideMode: 'legato' })), chipItem('EXP', true, null, 10)];
+    } else if (mode === 'unison') {
+      title = `UNISON · ${voices} ${voices === 1 ? 'VOICE' : 'VOICES'}`; sub = 'расстройка 14 центов · ширина 60%';
+      const lh = H / voices; let g = ''; for (let j = 0; j <= voices; j++) g += `M0 ${f(Y0 + j * lh)}H${HW}`; h.grid = g;
+      let ink = '', main = '';
+      for (let k = 0; k < voices; k++) {
+        const det = voices === 1 ? 0 : (k / (voices - 1)) * 2 - 1, fr = 6 * (1 + det * 0.035), yH = Y0 + k * lh + lh * 0.22, yL = Y0 + (k + 1) * lh - lh * 0.22;
+        let p = `M70 ${yL}`; const cyc = (HW - 140) / fr;
+        for (let c = 0; c < fr; c++) { const x0 = 70 + c * cyc; p += `V${f(yH)}H${f(Math.min(HW - 70, x0 + cyc / 2))}V${f(yL)}H${f(Math.min(HW - 70, x0 + cyc))}`; }
+        if (Math.abs(det) < 0.01) main += p; else ink += p;
+        labels.push(lab(14, Y0 + k * lh + lh / 2 - 6, voices === 1 ? '0 C' : `${det > 0 ? '+' : det < 0 ? '−' : ''}${Math.round(Math.abs(det) * 14)} C`));
+        labels.push(lab(HW - 54, Y0 + k * lh + lh / 2 - 6, voices === 1 ? 'C' : det < 0 ? 'L' : det > 0 ? 'R' : 'C'));
+      }
+      h.main = main || ink; h.ink = main ? ink : ''; h.inkOp = 0.55;
+      heroChips = [1, 2, 3, 4].map(n => chipItem(String(n), voices === n, this.act({ voices: n })));
+    }
+
+    const chLabel = { p1: 'PULSE 1', p2: 'PULSE 2', wave: isTri ? 'TRIANGLE' : 'WAVE', noise: 'NOISE' };
+    const icons = { p1: 'M1 9V1H5V9H17', p2: 'M1 9V1H9V9H17', wave: isTri ? 'M1 9L5 1L9 9L13 1L17 9' : 'M1 5H3V2H6V1H9V3H11V7H13V9H16V5H17', noise: 'M1 6H2V2H4V8H5V3H7V9H9V1H10V7H12V4H14V8H15V2H17' };
+    const tabs = ['p1', 'p2', 'wave', 'noise'].map(id => { const a = ch === id; return { label: chLabel[id], icon: icons[id], bg: a ? INK : 'transparent', fg: a ? '#fff' : MUT, ic: a ? A : 'currentColor', click: this.act({ channel: id, focus: 'none' }) }; });
+    const chips = ['NES', 'GB', 'FREE'].map(c => ({ label: c, bg: chip === c ? '#fff' : 'transparent', fg: chip === c ? INK : MUT, sh: chip === c ? '0 1px 2px rgba(0,0,0,.08)' : 'none', click: this.act({ chip: c }) }));
+    const chipName = { NES: 'RICOH 2A03 · 4 КАНАЛА', GB: 'DMG-CPU · 4 КАНАЛА', FREE: 'БЕЗ ОГРАНИЧЕНИЙ ЧИПА' }[chip];
+
+    const assign = overlay === 'macro';
+    const targets = { 0: { crush: 'M1 −2 BIT', sweep: 'M1 +30%' }, 1: { crush: 'M2 +40%', unison: 'M2 +20%' }, 2: { vibrato: 'M3 +60%', glide: 'M3 +25%' }, 3: { unison: 'M4 +50%' } }[macroSel] || {};
+    const T = [
+      { id: 'sweep', name: 'SWEEP', big: sweepDir === 'down' ? '−12' : '+12', unit: 'ST · 180 MS', viz: sweepDir === 'down' ? 'M0 6 C40 6 50 34 150 34' : 'M0 34 C40 34 50 6 150 6' },
+      { id: 'vibrato', name: 'VIBRATO', big: '5.5', unit: 'HZ · 18 C', viz: 'M0 20 H40 Q48 6 56 20 T72 20 T88 20 T104 20 T120 20 T136 20 T152 20' },
+      { id: 'crush', name: 'CRUSH', big: String(bits), unit: `BIT · ${[44.1, 22, 11, 5.5][rateI]} KHZ`, viz: 'M0 34 H20 V28 H40 V20 H60 V12 H80 V6 H100 V12 H120 V22 H140 V30 H150' },
+      { id: 'glide', name: 'GLIDE', big: '90', unit: glideMode === 'legato' ? 'MS · LEGATO' : 'MS · ALWAYS', viz: 'M0 32 H50 C80 32 80 8 110 8 H150' },
+      { id: 'unison', name: 'UNISON', big: String(voices), unit: 'VOICES · 14 C', viz: voices > 1 ? 'M0 12 H150 M0 20 H150 M0 28 H150' : 'M0 20 H150' }
+    ];
+    const tiles = T.map(t => {
+      const act = focus === t.id, tg = assign ? targets[t.id] : null, en = on[t.id];
+      return { ...t, bg: act ? INK : '#fff', fg: act ? '#fff' : INK, sub: act ? '#A9A49A' : MUT, bd: tg ? `1.5px dashed ${A}` : act ? `1px solid ${INK}` : '1px solid #E2DFD8',
+        dot: en ? A : 'transparent', dotBd: en ? A : '#C9C5BC', op: en ? 1 : 0.4, hasBadge: !!tg, badge: tg || '',
+        click: this.act({ focus: act ? 'none' : t.id }), toggle: this.act(() => ({ on: { ...on, [t.id]: !on[t.id] } })) };
+    });
+    const macros = [['BRIGHT', 62], ['DIRT', 30], ['MOTION', 45], ['SPACE', 20]].map(([name, val], i) => {
+      const sel = assign && i === macroSel;
+      return { n: String(i + 1), name, val, bg: sel ? '#fff' : 'transparent', bd: sel ? A : '#E2DFD8', fill: sel ? A : INK, numC: sel ? A : MUT, click: this.act({ macroSel: i, overlay: 'macro' }) };
+    });
+
+    const ic = { p12: 'M1 11V1H4V11H21', p50: 'M1 11V1H11V11H21', tri: 'M1 11L6 1L11 11L16 1L21 11', wav: 'M1 6H4V2H8V1H11V4H14V9H17V11H21', noi: 'M1 7H3V2H5V10H7V4H9V11H11V1H13V8H15V5H17V9H19V3H21' };
+    const PR = [['Hyrule Fanfare', 'LEAD', 'GB', 'wav', 'Яркий лид на самодельной волне, лёгкий sweep вниз на атаке и вибрато с задержкой.'], ['Overworld 1-1', 'LEAD', 'NES', 'p50', 'Квадрат 50% без эффектов — классика платформеров.'], ['Ocarina Lead', 'LEAD', 'GB', 'tri', 'Мягкий треугольник, медленное вибрато, длинный глайд.'], ['Pocket Arp', 'ARP', 'GB', 'p12', 'Узкий пульс 12.5% для быстрых арпеджио.'], ['Castle Bass', 'BASS', 'NES', 'tri', 'Треугольный бас NES, без громкости — только высота.'], ['Coin Square', 'SFX', 'NES', 'p12', 'Короткий скачок вверх на кварту.'], ['Lavender Wave', 'PAD', 'GB', 'wav', 'Тёмная волна, 3 голоса унисона.'], ['Power-Up', 'SFX', 'NES', 'p50', 'Восходящий sweep на октаву.'], ['Static Snare', 'DRUM', 'NES', 'noi', 'Длинный LFSR, быстрый спад.'], ['Dungeon Drone', 'PAD', 'GB', 'wav', 'Низкая волна с crush 4 бита.'], ['Kick 8', 'DRUM', 'NES', 'noi', 'Короткий шум с резким sweep вниз.'], ['Rupee Blip', 'SFX', 'GB', 'p12', 'Две ноты с быстрым глайдом.']];
+    const pr = PR[presetI];
+    const preset = { name: pr[0], cat: pr[1], chip: pr[2], num: String(presetI + 14).padStart(3, '0'), icon: ic[pr[3]], desc: pr[4], tags: [pr[2], pr[1], { wav: 'WAVE', p12: 'PULSE', p50: 'PULSE', tri: 'TRI', noi: 'NOISE' }[pr[3]]] };
+    const plist = PR.map((p, i) => ({ name: p[0], cat: p[1], chip: p[2], num: String(i + 14).padStart(3, '0'), icon: ic[p[3]], bg: i === presetI ? '#fff' : 'transparent', bar: i === presetI ? A : 'transparent', ic: i === presetI ? A : '#8A867E', click: this.act({ presetI: i }) }));
+    const cats = [['Все', 128], ['Lead', 32], ['Bass', 24], ['Arp', 18], ['Pad', 12], ['Drum', 22], ['SFX', 20]].map(([name, n], i) => ({ name, n, bg: i === 0 ? INK : 'transparent', fg: i === 0 ? '#fff' : INK, nc: i === 0 ? '#A9A49A' : '#8A867E' }));
+    const isBrowser = overlay === 'browser';
+
+    return {
+      h, labels, title, sub, heroChips, tabs, chips, chipName, tiles, macros, reg, periods, periodLabel: `${period + 1}/16`,
+      isNoise: mode === 'noise', isFocus: focus !== 'none', backLabel: chLabel[ch], back: this.act({ focus: 'none' }),
+      heroCursor: mode === 'wave' ? 'crosshair' : 'default',
+      onDown: e => { if (mode !== 'wave') return; this.drawing = true; this.lastPaint = null; this.snap = W.slice(); this.start = this.hit(e); if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId); this.paint(e); },
+      onMove: e => { if (this.drawing) this.paint(e); },
+      onUp: () => { this.drawing = false; this.lastPaint = null; this.start = null; },
+      preset, plist, cats, isBrowser,
+      pillBg: isBrowser ? INK : '#fff', pillBd: isBrowser ? INK : '#E2DFD8',
+      toggleBrowser: this.act({ overlay: isBrowser ? 'none' : 'browser' }),
+      prevPreset: this.act({ presetI: (presetI + PR.length - 1) % PR.length }), nextPreset: this.act({ presetI: (presetI + 1) % PR.length }),
+      toggleAssign: this.act({ overlay: assign ? 'none' : 'macro' }), assignLabel: assign ? 'ГОТОВО' : 'ASSIGN', assignBg: assign ? A : '#ECE9E3', assignFg: INK
+    };
+  }
+}
+</script>
+</body>
+</html>

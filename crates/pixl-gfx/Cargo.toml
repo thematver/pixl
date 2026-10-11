@@ -1,0 +1,30 @@
+[package]
+name = "pixl-gfx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "PIXL native rendering platform: NSView child view + wgpu (Metal) + vello + parley text"
+
+[features]
+default = ["png"]
+# `render_to_png` / `Image::save_png` (golden screenshots).
+png = ["dep:png"]
+
+[dependencies]
+vello = "0.11"
+parley = { version = "0.12", default-features = false, features = ["std"] }
+skrifa = "0.44"
+pollster = "0.4"
+log = "0.4"
+png = { version = "0.18", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-quartz-core = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+block2 = { workspace = true }
+
