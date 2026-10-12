@@ -47,7 +47,19 @@ fn hero(app:&EditorApp,c:&mut Canvas){
     if wave_view {
         let w=if chip==ChipMode::Nes{wave::NES_TRIANGLE}else{app.bridge.wave()};let step=858./32.;let playing=app.bridge.telemetry().wave_step;
         for(i,v)in w.iter().enumerate(){let x=21.+i as f64*step;let y=PLOT.y1-*v as f64/15.*PLOT.height();c.fill_rect(Rect::new(x+2.,y,x+step-2.,PLOT.y1+8.),rgba(A,0.13));if playing==Some(i as u8){c.fill_rect(Rect::new(x,PLOT.y0-6.,x+step,PLOT.y1+8.),rgba(A,0.08));}pts.push((x,y));pts.push((x+step,y));}
-        path(c,&pts,if chip==ChipMode::Nes{INK}else{A},false);label(c,34.,329.,if chip==ChipMode::Nes{app.text("ФИКСИРОВАННАЯ ФОРМА · БЕЗ ГРОМКОСТИ","FIXED WAVEFORM · NO VOLUME")}else{app.text("32 ШАГА · РИСУЙТЕ МЫШЬЮ","32 STEPS · DRAW WITH MOUSE")});return;
+        let hovered=app.wave_editable()&&crate::editor::WAVE_PLOT.contains(app.hover);
+        let index=((app.hover.x-21.)/step).floor().clamp(0.,31.)as usize;
+        if hovered {
+            let x=21.+index as f64*step;let y=PLOT.y1-w[index]as f64/15.*PLOT.height();
+            c.fill_rect(Rect::new(x,PLOT.y0,x+step,PLOT.y1),rgba(A,0.07));
+            c.line((x+step*0.5,PLOT.y0),(x+step*0.5,PLOT.y1),1.,rgba(A,0.35));
+            dot(c,(x+step*0.5,y),true);
+        }
+        path(c,&pts,if chip==ChipMode::Nes{INK}else{A},false);
+        let caption=if chip==ChipMode::Nes{app.text("ФИКСИРОВАННАЯ ФОРМА · БЕЗ ГРОМКОСТИ","FIXED WAVEFORM · NO VOLUME").into()}
+            else if hovered{format!("{} {:02}/32 · {} {:02}/15",app.text("ШАГ","STEP"),index+1,app.text("УРОВЕНЬ","LEVEL"),w[index])}
+            else{app.text("32 ШАГА · ПКМ — ИНСТРУМЕНТЫ","32 STEPS · RIGHT CLICK FOR TOOLS").into()};
+        text(c,Rect::new(34.,329.,546.,347.),&caption,10.,MUT,true);return;
     }
     if app.ui.focus.is_none()&&matches!(app.ui.channel,Channel::P1|Channel::P2){let duty=get(ParamId::duty(app.ui.channel).unwrap())/100.;for k in 0..4{let x=PLOT.x0+k as f64*PLOT.width()/4.;pts.extend([(x,280.),(x,182.),(x+duty*PLOT.width()/4.,182.),(x+duty*PLOT.width()/4.,280.),(x+PLOT.width()/4.,280.)]);}for n in 1..=32{let h=((n as f64*std::f64::consts::PI*duty).sin()/n as f64).abs()*120.;let x=22.+(n-1)as f64*26.8;c.fill_rect(Rect::new(x+3.,328.-h,x+23.,328.),rgba(A,0.13));}dot(c,(PLOT.x0+duty*PLOT.width()/4.,231.),false);path(c,&pts,A,false);label(c,34.,329.,app.text("ГАРМОНИКИ","HARMONICS"));return;}
     if app.ui.focus.is_none()&&app.ui.channel==Channel::Noise{let mut reg=app.bridge.telemetry().lfsr.max(1);for i in 0..160{let bit=(reg^(reg>>1))&1;reg=(reg>>1)|(bit<<14);if get(ParamId::NsMode)>0.{reg=(reg& !(1<<6))|(bit<<6);}let y=if reg&1==0{180.}else{265.};let x=21.+i as f64*858./160.;pts.push((x,y));pts.push((x+858./160.,y));}path(c,&pts,A,false);for i in 0..15{let x=34.+i as f64*16.;c.fill_rounded_rect(Rect::new(x,323.,x+14.,337.),3.,rgb(if reg&(1<<i)>0{INK}else{0xFFFFFF}));c.stroke_rounded_rect(Rect::new(x,323.,x+14.,337.),3.,1.,rgb(if i<2{A}else{LINE}));}for i in 0..16{let x=620.+i as f64*14.;let h=6.+i as f64*1.6;c.fill_rounded_rect(Rect::new(x,337.-h,x+12.,337.),2.,rgb(if i==get(ParamId::NsPeriod)as usize{A}else{0xC9C5BC}));}return;}

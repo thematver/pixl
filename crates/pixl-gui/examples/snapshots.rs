@@ -23,12 +23,19 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         ("16-free-wave",Channel::Wave,None,ChipMode::Free),
         ("17-free-envelope",Channel::P1,Some(Focus::Env),ChipMode::Free),
         ("18-en-browser",Channel::Wave,None,ChipMode::Gb),
+        ("19-wave-tools",Channel::Wave,None,ChipMode::Gb),
     ];
     let mut harness=pixl_gfx::Headless::new()?;
     for(name,channel,focus,chip)in states{let bridge=Arc::new(MockBridge::new());bridge.set_param_once(ParamId::Chip,chip.index()as f32);bridge.animate(0.7);let mut app=EditorApp::new(bridge);app.ui.channel=channel;app.ui.focus=focus;
         if name.contains("browser"){app.open_browser();}if name=="18-en-browser"{app.ui.lang=Lang::En;}
         if name=="15-browser-save"{app.browser.saving=true;app.browser.save_name="My Hyrule Variation".into();}
         if name=="11-macro-assign"{app.assign=true;app.ui.macro_selected=1;}
+        if name=="19-wave-tools" {
+            harness.event(&mut app,&pixl_gfx::Event::MouseMove(pixl_gfx::MouseEvent {
+                pos:pixl_gfx::kurbo::Point::new(432.,225.),delta:pixl_gfx::kurbo::Vec2::ZERO,
+                button:None,buttons:pixl_gfx::MouseButtons::NONE,mods:pixl_gfx::Modifiers::default(),click_count:0,
+            }));
+        }
         let path=format!("{dir}/{name}.png");harness.render(&mut app,2.)?.save_png(&path)?;println!("{path}");
     }Ok(())
 }

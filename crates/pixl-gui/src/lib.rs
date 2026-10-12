@@ -1,5 +1,7 @@
 //! PIXL's native Bridge-driven editor and deterministic standalone test harness.
 mod history;
+mod wave_edit;
+pub use wave_edit::WaveEdit;
 mod editor;
 mod mock;
 mod paint;
