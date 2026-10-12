@@ -663,3 +663,55 @@ fn pitch_wheel_and_channel_pressure_work_through_clap_wrappers_auv2_translation(
     assert!(pressed > 1.02 && pressed_midi > 1.02, "aftertouch vibrato: {pressed} {pressed_midi}");
     inst.deactivate();
 }
+
+#[test]
+fn native_factory_presets_restore_whole_sound_and_keep_instance_preferences() {
+    let _guard = ENTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ON_MAIN_THREAD.store(true, Ordering::SeqCst);
+    #[repr(C)]
+    struct Info { number: i32, name: [c_char; 256] }
+    #[repr(C)]
+    struct Extension {
+        count: unsafe extern "C" fn(*const clap_plugin) -> u32,
+        get: unsafe extern "C" fn(*const clap_plugin, u32, *mut Info) -> bool,
+        load: unsafe extern "C" fn(*const clap_plugin, i32) -> bool,
+    }
+    let inst = Instance::new();
+    let mut json = state_json(&inst.save());
+    let ui = serde_json::json!({"scale": 1.5, "lang": "en"}).to_string();
+    json["fields"]["ui"] = ui.into();
+    assert!(inst.load(&state_bytes(&json)));
+    let original_ui = state_json(&inst.save())["fields"]["ui"].clone();
+    unsafe {
+        let ext = ((*inst.plugin).get_extension.unwrap())(inst.plugin, c"audio.pixl.factory-presets/1".as_ptr()) as *const Extension;
+        assert!(!ext.is_null());
+        let ext = &*ext;
+        let library = pixl::presets::factory_library();
+        assert_eq!((ext.count)(inst.plugin) as usize, library.presets.len());
+        for (index, expected) in library.presets.iter().enumerate() {
+            let mut info = Info { number: -1, name: [0; 256] };
+            assert!((ext.get)(inst.plugin, index as u32, &mut info));
+            assert_eq!(info.number, expected.preset.number as i32);
+            assert_eq!(CStr::from_ptr(info.name.as_ptr()).to_str().unwrap(), expected.preset.name);
+            assert!((ext.load)(inst.plugin, info.number));
+            let json = state_json(&inst.save());
+            let restored: nih_plug::prelude::PluginState = serde_json::from_value(json.clone()).unwrap();
+            let values = pixl::state::values_from_plugin_state(&restored);
+            for spec in PARAMS.iter() {
+                assert!((values.get(spec.id) - expected.state.values.get(spec.id)).abs() < 0.0001, "{}: {}", expected.id, spec.key);
+            }
+            assert_eq!(serde_json::from_str::<Vec<u8>>(json["fields"]["wave"].as_str().unwrap()).unwrap(), expected.state.wave);
+            let macros: pixl_core::MacroAssignments = serde_json::from_str(json["fields"]["macros"].as_str().unwrap()).unwrap();
+            assert_eq!(macros, expected.state.macros);
+            assert_eq!(json["fields"]["ui"], original_ui);
+            let meta: Value = serde_json::from_str(json["fields"]["preset"].as_str().unwrap()).unwrap();
+            assert_eq!(meta["id"], expected.id);
+            assert_eq!(meta["modified"], false);
+        }
+        let before = inst.save();
+        assert!(!(ext.load)(inst.plugin, -1));
+        assert!(!(ext.load)(inst.plugin, i32::MAX));
+        assert_eq!(inst.save(), before);
+        assert!(!(ext.get)(inst.plugin, u32::MAX, std::ptr::null_mut()));
+    }
+}

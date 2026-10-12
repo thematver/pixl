@@ -1,0 +1,171 @@
+diff --git a/src/detail/auv2/auv2_base_classes.h b/src/detail/auv2/auv2_base_classes.h
+index 2db27a8..bd949fd 100644
+--- a/src/detail/auv2/auv2_base_classes.h
++++ b/src/detail/auv2/auv2_base_classes.h
+@@ -558,6 +558,9 @@ class WrapAsAUV2 : public ausdk::AUBase,
+     CFRelease(num);
+   }
+ 
++  OSStatus GetPresets(CFArrayRef *outData) const override;
++  OSStatus NewFactoryPresetSet(const AUPreset &preset) override;
++  OSStatus NewCustomPresetSet(const AUPreset &preset) override;
+   OSStatus SaveState(CFPropertyListRef *ptPList) override;
+   OSStatus RestoreState(CFPropertyListRef plist) override;
+ 
+diff --git a/src/wrapasauv2.cpp b/src/wrapasauv2.cpp
+index ca783d1..5947ed9 100644
+--- a/src/wrapasauv2.cpp
++++ b/src/wrapasauv2.cpp
+@@ -4,6 +4,7 @@
+ #include <limits>
+ #include <cassert>
+ #include <Block.h>
++#include "pixl_factory_presets.h"
+ 
+ extern bool fillAudioUnitCocoaView(AudioUnitCocoaViewInfo *viewInfo, std::shared_ptr<Clap::Plugin>);
+ 
+@@ -1366,6 +1367,79 @@ void WrapAsAUV2::onIdle()
+   }
+ }
+ 
++// CFArray owns copies of AUPreset records and their CFString names.
++static const void *pixlRetainPreset(CFAllocatorRef, const void *value)
++{
++  const auto *source = static_cast<const AUPreset *>(value);
++  auto *copy = new AUPreset(*source);
++  CFRetain(copy->presetName);
++  return copy;
++}
++static void pixlReleasePreset(CFAllocatorRef, const void *value)
++{
++  const auto *preset = static_cast<const AUPreset *>(value);
++  CFRelease(preset->presetName);
++  delete preset;
++}
++static const PixlFactoryPresets *pixlPresets(const std::shared_ptr<Clap::Plugin> &plugin)
++{
++  if (!plugin || !plugin->_plugin) return nullptr;
++  return static_cast<const PixlFactoryPresets *>(
++      plugin->_plugin->get_extension(plugin->_plugin, PIXL_FACTORY_PRESETS_ID));
++}
++OSStatus WrapAsAUV2::GetPresets(CFArrayRef *outData) const
++{
++  const auto *ext = pixlPresets(_plugin);
++  if (!ext) return kAudioUnitErr_InvalidProperty;
++  if (!outData) return noErr; // AUBase property-info probe
++  const CFArrayCallBacks callbacks = {0, pixlRetainPreset, pixlReleasePreset, nullptr, nullptr};
++  auto array = CFArrayCreateMutable(nullptr, 0, &callbacks);
++  if (!array) return kAudioUnitErr_FailedInitialization;
++  for (uint32_t i = 0; i < ext->count(_plugin->_plugin); ++i)
++  {
++    PixlFactoryPresetInfo info{};
++    if (!ext->get(_plugin->_plugin, i, &info)) { CFRelease(array); return kAudioUnitErr_InvalidPropertyValue; }
++    auto name = CFStringCreateWithCString(nullptr, info.name, kCFStringEncodingUTF8);
++    if (!name) { CFRelease(array); return kAudioUnitErr_InvalidPropertyValue; }
++    AUPreset preset{info.number, name};
++    CFArrayAppendValue(array, &preset);
++    CFRelease(name);
++  }
++  *outData = array;
++  return noErr;
++}
++OSStatus WrapAsAUV2::NewFactoryPresetSet(const AUPreset &requested)
++{
++  const auto *ext = pixlPresets(_plugin);
++  if (!ext) return kAudioUnitErr_InvalidProperty;
++  auto guarantee_mainthread = _plugin->AlwaysMainThread();
++  for (uint32_t i = 0; i < ext->count(_plugin->_plugin); ++i)
++  {
++    PixlFactoryPresetInfo info{};
++    if (!ext->get(_plugin->_plugin, i, &info) || info.number != requested.presetNumber) continue;
++    if (!ext->load(_plugin->_plugin, info.number)) return kAudioUnitErr_InvalidPropertyValue;
++    auto name = CFStringCreateWithCString(nullptr, info.name, kCFStringEncodingUTF8);
++    AUPreset preset{info.number, name};
++    SetAFactoryPresetAsCurrent(preset);
++    if (_current_program_name) CFRelease(_current_program_name);
++    _current_program_name = CFStringCreateCopy(nullptr, name);
++    CFRelease(name);
++    PropertyChanged(kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0);
++    return noErr;
++  }
++  return kAudioUnitErr_InvalidPropertyValue;
++}
++OSStatus WrapAsAUV2::NewCustomPresetSet(const AUPreset &preset)
++{
++  const auto result = AUBase::NewCustomPresetSet(preset);
++  if (result == noErr)
++  {
++    if (_current_program_name) CFRelease(_current_program_name);
++    _current_program_name = CFStringCreateCopy(nullptr, preset.presetName);
++  }
++  return result;
++}
++
+ OSStatus WrapAsAUV2::SaveState(CFPropertyListRef *ptPList)
+ {
+   if (!ptPList) return kAudioUnitErr_InvalidParameter;
+@@ -1381,7 +1455,7 @@ OSStatus WrapAsAUV2::SaveState(CFPropertyListRef *ptPList)
+   else
+   {
+     Clap::StateMemento chunk;
+-    _plugin->_ext._state->save(_plugin->_plugin, chunk);
++    if (!_plugin->_ext._state->save(_plugin->_plugin, chunk)) return kAudioUnitErr_InvalidPropertyValue;
+ 
+ #if DICTIONARY_STREAM_FORMAT_JUCE
+     auto err = ausdk::AUBase::SaveState(ptPList);
+@@ -1440,7 +1514,21 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+ 
+   if (!IsInitialized()) return kAudioUnitErr_Uninitialized;
+ 
++  if (CFGetTypeID(plist) != CFDictionaryGetTypeID()) return kAudioUnitErr_InvalidPropertyValue;
+   CFDictionaryRef tDict = CFDictionaryRef(plist);
++  const auto desc = GetComponentDescription();
++  const char *keys[] = {kAUPresetTypeKey, kAUPresetSubtypeKey, kAUPresetManufacturerKey};
++  const UInt32 values[] = {desc.componentType, desc.componentSubType, desc.componentManufacturer};
++  for (unsigned i = 0; i < 3; ++i)
++  {
++    auto key = CFStringCreateWithCString(nullptr, keys[i], kCFStringEncodingUTF8);
++    auto value = static_cast<CFNumberRef>(CFDictionaryGetValue(tDict, key));
++    CFRelease(key);
++    SInt32 number = 0;
++    if (!value || CFGetTypeID(value) != CFNumberGetTypeID() ||
++        !CFNumberGetValue(value, kCFNumberSInt32Type, &number) || static_cast<UInt32>(number) != values[i])
++      return kAudioUnitErr_InvalidPropertyValue;
++  }
+ 
+   // Find 'data' key
+   const void *pData = CFDictionaryGetValue(tDict, CFSTR(kAUPresetDataKey));
+@@ -1481,10 +1569,7 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+ #endif
+ 
+   const void *pName = CFDictionaryGetValue(tDict, CFSTR(kAUPresetNameKey));
+-  if (pName)
+-  {
+-    _current_program_name = CFStringCreateCopy(NULL, (CFStringRef)pName);
+-  }
++  if (pName && CFGetTypeID(pName) != CFStringGetTypeID()) return kAudioUnitErr_InvalidPropertyValue;
+ 
+   CFDataRef tData = CFDataRef(pData);
+ 
+@@ -1497,10 +1582,19 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+     {
+       Clap::StateMemento chunk;
+       chunk.setData(pData, lLen);
+-      _plugin->_ext._state->load(_plugin->_plugin, chunk);
++      auto guarantee_mainthread = _plugin->AlwaysMainThread();
++      if (!_plugin->_ext._state || !_plugin->_ext._state->load(_plugin->_plugin, chunk))
++        return kAudioUnitErr_InvalidPropertyValue;
++      if (pName)
++      {
++        AUPreset preset{-1, static_cast<CFStringRef>(pName)};
++        NewCustomPresetSet(preset);
++        PropertyChanged(kAudioUnitProperty_PresentPreset, kAudioUnitScope_Global, 0);
++      }
++      return noErr;
+     }
+   }
+-  return noErr;
++  return kAudioUnitErr_InvalidPropertyValue;
+ }
+ 
+ bool WrapAsAUV2::isEffectFacade()
