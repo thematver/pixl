@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+description = "The PIXL editor: a Bridge-driven, GPU-rendered native UI built on pixl-gfx"
 
 [dependencies]
 pixl-core = { path = "../pixl-core" }
 pixl-gfx = { path = "../pixl-gfx" }
+
+[dev-dependencies]
+# Reference-image comparison in `examples/compare.rs`.
+png = "0.18"

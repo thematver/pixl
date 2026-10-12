@@ -314,18 +314,18 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             None => *input.params,
         };
         self.update_effective(&base);
+        let transport = sanitize_transport(input.transport);
 
         if !self.rate_supported {
             // Unsupported sample rate: stay silent (events are consumed and dropped).
             events.into_iter().for_each(drop);
             left.fill(0.0);
             right.fill(0.0);
-            self.telemetry = TelemetrySnapshot::default();
+            self.telemetry = TelemetrySnapshot { tempo_bpm: transport.tempo_bpm as f32, transport_playing: transport.playing, ..Default::default() };
             self.end_handover(input, handover);
             return BlockStatus::Silent;
         }
 
-        let transport = sanitize_transport(input.transport);
         self.engine.set_transport(transport);
         self.fx.set_tempo(transport.tempo_bpm);
 
@@ -357,7 +357,7 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             }
         }
 
-        self.collect_telemetry();
+        self.collect_telemetry(transport);
         self.end_handover(input, handover);
         if !self.engine.is_silent() {
             BlockStatus::Active
@@ -457,10 +457,12 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
         }
     }
 
-    fn collect_telemetry(&mut self) {
+    fn collect_telemetry(&mut self, transport: Transport) {
         let mut t = TelemetrySnapshot::default();
         self.engine.fill_telemetry(&mut t);
         self.fx.fill_telemetry(&mut t);
+        t.tempo_bpm = transport.tempo_bpm as f32;
+        t.transport_playing = transport.playing;
         sanitize_telemetry(&mut t);
         self.telemetry = t;
     }
@@ -802,6 +804,39 @@ pub(crate) mod tests {
         assert_eq!(t.beat_pos, None);
         assert!(t.playing);
         assert_eq!(p.fx().tempo, 120.0);
+        assert_eq!(p.telemetry().tempo_bpm, 120.0);
+        assert!(p.telemetry().transport_playing);
+    }
+
+    #[test]
+    fn telemetry_tracks_the_transport_used_for_audio_including_empty_blocks() {
+        let mut p = mock();
+        let shared = Shared::new();
+        let params = ParamValues::defaults();
+        let mut input = shared.input(&params);
+        input.transport = Transport { tempo_bpm: 137.25, playing: true, beat_pos: Some(8.0) };
+        p.process(&input, [on(0, 60)], &mut [0.0; 64], &mut [0.0; 64]);
+        assert_eq!(p.telemetry().tempo_bpm, 137.25);
+        assert!(p.telemetry().transport_playing);
+        assert_eq!(p.telemetry().active_voices, 1);
+
+        // A tempo/stop change is useful to the editor before the next rendered sample.
+        // Transport stopped does not imply silence: a played note can remain sounding.
+        for (host_bpm, playing, expected_bpm) in [
+            (89.5, false, 89.5),
+            (10.0, true, 20.0),
+            (1_500.0, false, 999.0),
+            (0.0, true, 120.0),
+            (f64::INFINITY, false, 120.0),
+        ] {
+            input.transport = Transport { tempo_bpm: host_bpm, playing, beat_pos: None };
+            p.process(&input, [], &mut [], &mut []);
+            assert_eq!(p.engine().transport.unwrap().tempo_bpm, expected_bpm);
+            assert_eq!(p.fx().tempo, expected_bpm);
+            assert_eq!(p.telemetry().tempo_bpm, expected_bpm as f32);
+            assert_eq!(p.telemetry().transport_playing, playing);
+            assert_eq!(p.telemetry().active_voices, 1);
+        }
     }
 
     #[test]
@@ -824,9 +859,13 @@ pub(crate) mod tests {
         let shared = Shared::new();
         let params = ParamValues::defaults();
         let (mut l, mut r) = (vec![3.0f32; 64], vec![3.0f32; 64]);
-        assert_eq!(p.process(&shared.input(&params), [on(0, 60)], &mut l, &mut r), BlockStatus::Silent);
+        let mut input = shared.input(&params);
+        input.transport = Transport { tempo_bpm: 97.5, playing: true, beat_pos: None };
+        assert_eq!(p.process(&input, [on(0, 60)], &mut l, &mut r), BlockStatus::Silent);
         assert!(l.iter().chain(r.iter()).all(|x| *x == 0.0));
         assert!(p.engine().prepared.is_none());
+        assert_eq!(p.telemetry().tempo_bpm, 97.5);
+        assert!(p.telemetry().transport_playing);
         p.prepare(48_000.0);
         assert_eq!(p.engine().prepared, Some((48_000.0, SUB_BLOCK)));
         p.engine.prepared = None;

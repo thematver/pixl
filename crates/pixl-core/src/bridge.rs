@@ -54,6 +54,11 @@ pub struct CurrentPreset {
 /// Values may be slightly torn across fields; they are for display only.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TelemetrySnapshot {
+    /// Host tempo used by the DSP and effects (BPM, sanitized to 20..=999).
+    /// Defaults to 120 when the host has not supplied a usable tempo.
+    pub tempo_bpm: f32,
+    /// Whether the host transport is playing; voices may also sound while stopped.
+    pub transport_playing: bool,
     /// Output peak level per channel (dBFS, ballistic: instant attack, ~300 ms release).
     pub peak_db: [f32; 2],
     /// Output RMS level per channel (dBFS, ~300 ms window).
@@ -87,6 +92,8 @@ pub const METER_FLOOR_DB: f32 = -100.0;
 impl Default for TelemetrySnapshot {
     fn default() -> Self {
         Self {
+            tempo_bpm: 120.0,
+            transport_playing: false,
             peak_db: [METER_FLOOR_DB; 2],
             rms_db: [METER_FLOOR_DB; 2],
             peak_hold_db: METER_FLOOR_DB,

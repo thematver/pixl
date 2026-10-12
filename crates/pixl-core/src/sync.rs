@@ -97,6 +97,8 @@ impl AtomicMacros {
 
 /// Telemetry published by the audio thread, sampled by the GUI.
 pub struct AtomicTelemetry {
+    tempo_bpm: AtomicU32,
+    transport_playing: AtomicBool,
     peak: [AtomicU32; 2],
     rms: [AtomicU32; 2],
     peak_hold: AtomicU32,
@@ -114,6 +116,8 @@ pub struct AtomicTelemetry {
 impl Default for AtomicTelemetry {
     fn default() -> Self {
         let t = Self {
+            tempo_bpm: AtomicU32::new(0),
+            transport_playing: AtomicBool::new(false),
             peak: std::array::from_fn(|_| AtomicU32::new(0)),
             rms: std::array::from_fn(|_| AtomicU32::new(0)),
             peak_hold: AtomicU32::new(0),
@@ -135,6 +139,8 @@ impl Default for AtomicTelemetry {
 impl AtomicTelemetry {
     pub fn publish(&self, s: &TelemetrySnapshot) {
         let r = Ordering::Relaxed;
+        self.tempo_bpm.store(f32_to_bits(s.tempo_bpm), r);
+        self.transport_playing.store(s.transport_playing, r);
         for i in 0..2 {
             self.peak[i].store(f32_to_bits(s.peak_db[i]), r);
             self.rms[i].store(f32_to_bits(s.rms_db[i]), r);
@@ -158,6 +164,8 @@ impl AtomicTelemetry {
         let r = Ordering::Relaxed;
         let opt = |v: i32| if v < 0 { None } else { Some(v as u8) };
         TelemetrySnapshot {
+            tempo_bpm: bits_to_f32(self.tempo_bpm.load(r)),
+            transport_playing: self.transport_playing.load(r),
             peak_db: [bits_to_f32(self.peak[0].load(r)), bits_to_f32(self.peak[1].load(r))],
             rms_db: [bits_to_f32(self.rms[0].load(r)), bits_to_f32(self.rms[1].load(r))],
             peak_hold_db: bits_to_f32(self.peak_hold.load(r)),
@@ -215,12 +223,17 @@ mod tests {
     #[test]
     fn telemetry_roundtrip() {
         let t = AtomicTelemetry::default();
-        let mut s = TelemetrySnapshot { last_note: Some(60), wave_step: Some(7), frame: 42, ..Default::default() };
+        assert_eq!(t.load(), TelemetrySnapshot::default());
+        let mut s = TelemetrySnapshot { tempo_bpm: 137.25, transport_playing: true, last_note: Some(60), wave_step: Some(7), frame: 42, ..Default::default() };
         s.held_notes[0] = 1 << 60;
         t.publish(&s);
         let l = t.load();
         assert_eq!(l, s);
         assert!(l.is_held(60));
         assert!(!l.is_held(61));
+        s.tempo_bpm = 89.5;
+        s.transport_playing = false;
+        t.publish(&s);
+        assert_eq!(t.load(), s, "tempo and stop changes are published even within the same chip frame");
     }
 }

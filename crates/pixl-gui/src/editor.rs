@@ -42,11 +42,12 @@ pub struct EditorApp {
     pub(crate) hover:Point, drag:Option<Drag>, menu_param:Option<ParamId>, pub(crate) tip:String,
     last_values:Vec<f32>, last_telemetry:TelemetrySnapshot, last_preset:CurrentPreset, last_generation:u64,
     pub(crate) transition:f64,
+    pub(crate) press_rect:Option<Rect>, pub(crate) press_opacity:f64,
     pub(crate) hover_rect:Option<Rect>, pub(crate) hover_opacity:f64, haptics:bool, haptic_cooldown:f64,
-    text_editing:bool, pub(crate) caret:usize, pub(crate) anchor:usize, pub(crate) preedit:String, clipboard:String, wave_clipboard:String,
+    pub(crate) text_editing:bool, pub(crate) caret:usize, pub(crate) anchor:usize, pub(crate) preedit:String, clipboard:String, wave_clipboard:String,
 }
 impl EditorApp {
-    pub fn new(bridge:Arc<dyn Bridge>)->Self { let ui=bridge.ui_state(); let last_generation=bridge.state_generation(); Self {value_entry:None,last_generation,comparison:None,comparison_b:false,history:crate::history::History::default(),edit_before:None,bridge,ui,browser:BrowserState::default(),assign:false,hover:Point::new(-1.0,-1.0),drag:None,menu_param:None,tip:String::new(),last_values:Vec::new(),last_telemetry:TelemetrySnapshot::default(),last_preset:CurrentPreset::default(),transition:0.0,hover_rect:None,hover_opacity:0.0,haptics:true,haptic_cooldown:0.0,text_editing:false,caret:0,anchor:0,preedit:String::new(),clipboard:String::new(),wave_clipboard:String::new()} }
+    pub fn new(bridge:Arc<dyn Bridge>)->Self { let ui=bridge.ui_state(); let last_generation=bridge.state_generation(); Self {value_entry:None,last_generation,comparison:None,comparison_b:false,history:crate::history::History::default(),edit_before:None,bridge,ui,browser:BrowserState::default(),assign:false,hover:Point::new(-1.0,-1.0),drag:None,menu_param:None,tip:String::new(),last_values:Vec::new(),last_telemetry:TelemetrySnapshot::default(),last_preset:CurrentPreset::default(),transition:0.0,press_rect:None,press_opacity:0.0,hover_rect:None,hover_opacity:0.0,haptics:true,haptic_cooldown:0.0,text_editing:false,caret:0,anchor:0,preedit:String::new(),clipboard:String::new(),wave_clipboard:String::new()} }
     pub fn text<'a>(&self,ru:&'a str,en:&'a str)->&'a str {if self.ui.lang==Lang::Ru {ru}else{en}}
     pub fn persist(&self) {self.bridge.set_ui_state(self.ui.clone());}
     pub fn filtered_presets(&self)->Vec<PresetInfo> {
@@ -91,9 +92,9 @@ impl EditorApp {
         if self.browser.open { out.retain(|c|c.rect.y0<52.); self.browser_controls(&mut out); return out; }
         if self.ui.focus.is_some() {add(Rect::new(34.,116.,126.,138.),self.text("← КАНАЛ","← CHANNEL").into(),Action::Focus(None),false);}
         let ids=self.focus_params(); let mut x=868.;
-        let widths: Vec<f64> = ids.iter().map(|id| { let label=format!("{} {}",id.spec().short,id.format(self.bridge.param(*id))); (label.chars().count() as f64*6.3+16.).clamp(42.,120.) }).collect();
+        let widths: Vec<f64> = ids.iter().map(|id| { let label=self.param_label(*id); (label.chars().count() as f64*6.3+18.).clamp(42.,180.) }).collect();
         let fit = (570.0 / widths.iter().sum::<f64>().max(1.0)).min(1.0);
-        for (id, width) in ids.iter().zip(&widths).rev() {let label=format!("{} {}",id.spec().short,id.format(self.bridge.param(*id)));let w=width*fit; x-=w;
+        for (id, width) in ids.iter().zip(&widths).rev() {let label=self.param_label(*id);let w=width*fit; x-=w;
             add(Rect::new(x,116.,x+w-4.,138.),label,Action::Param(*id),false);
         }
         if self.ui.focus.is_none() {
@@ -158,7 +159,17 @@ impl EditorApp {
         Some(Focus::Unison)=>vec![UniVoices,UniDetune,UniWidth,VoiceMode,Polyphony],
         Some(Focus::Echo)=>vec![if self.bridge.param(EchoSync)>0.{EchoDiv}else{EchoTime},EchoFb,EchoMix,EchoFir,EchoWidth,EchoSync],None=>vec![]}}
     fn param_for(&self,a:&Action)->Option<ParamId>{match a {Action::Param(id)|Action::Set(id,_)|Action::Toggle(id)=>Some(*id),Action::Macro(i)=>Some(ParamId::macro_value(*i)),Action::Focus(Some(f))=>TILES.iter().find(|t|t.0==*f).map(|t|t.3),_=>None}}
-    fn hit(&self,p:Point)->Option<Control>{self.controls().into_iter().rev().find(|c|c.rect.contains(p))}
+    pub(crate) fn param_label(&self,id:ParamId)->String {
+        let base=self.bridge.param(id);let effective=self.bridge.param_modulated(id);
+        if (base-effective).abs()>0.001 {format!("{} {} → {}",id.spec().short,id.format(base),id.format(effective))}
+        else {format!("{} {}",id.spec().short,id.format(base))}
+    }
+    pub(crate) fn control_enabled(&self,c:&Control)->bool {match c.action {
+        Action::Undo|Action::Redo=>c.active,
+        Action::Load=>self.filtered_presets().iter().any(|p|Some(&p.id)==self.browser.selected.as_ref()),
+        _=>true,
+    }}
+    fn hit(&self,p:Point)->Option<Control>{self.controls().into_iter().rev().find(|c|c.rect.contains(p)&&self.control_enabled(c))}
     fn finish_drag(&mut self){if let Some(d)=self.drag.take(){if d.begun&&!d.assignment {for id in d.ids {self.bridge.end_edit(id);}}} self.tip.clear();}
     fn activate(&mut self,a:Action,ctx:&mut EventCtx){match a {
         Action::Undo=>{self.history.undo(&*self.bridge);self.edit_before=None;},
@@ -181,7 +192,7 @@ impl EditorApp {
         Action::Favorites=>{self.browser.favorites=!self.browser.favorites;self.filter_changed();},Action::User=>{self.browser.user_only=!self.browser.user_only;self.browser.category=None;self.filter_changed();},Action::Sort=>{self.browser.alphabetical=!self.browser.alphabetical;self.filter_changed();},
         Action::Select(id)=>self.browser.selected=Some(id),Action::Load=>self.load_selected(ctx),Action::Favorite(id)=>{if let Some(p)=self.bridge.preset_list().iter().find(|p|p.id==id){self.bridge.set_favorite(&id,!p.favorite);}},
         Action::SaveForm=>{self.browser.saving=true;self.browser.save_name=self.bridge.current_preset().name;self.browser.error.clear();self.caret=self.browser.save_name.len();self.anchor=0;self.text_editing=true;ctx.focus_text_input();},Action::SaveName=>{let layout=ctx.layout(&self.browser.save_name,&pixl_gfx::TextStyle::sans(12.));self.caret=layout.hit_test(Point::new((self.hover.x-248.).max(0.),8.));self.anchor=self.caret;self.text_editing=true;ctx.focus_text_input();},Action::SaveCategory(c)=>self.browser.save_category=c,
-        Action::Save=>{match self.bridge.save_user_preset(&self.browser.save_name,self.browser.save_category){Ok(id)=>{self.browser.saving=false;self.browser.selected=Some(id);self.browser.search.clear();self.browser.category=None;self.browser.chip=None;self.browser.favorites=false;self.browser.user_only=true;self.browser.scroll=0.;},Err(e)=>self.browser.error=e}},Action::Cancel=>self.browser.saving=false,
+        Action::Save=>{if self.browser.save_name.trim().is_empty()||self.browser.save_name.trim().chars().count()>80{self.browser.error=self.text("Введите название (1–80 символов)","Enter a name (1–80 characters)").into();return;}match self.bridge.save_user_preset(&self.browser.save_name,self.browser.save_category){Ok(id)=>{self.browser.saving=false;self.browser.selected=Some(id);self.browser.search.clear();self.browser.category=None;self.browser.chip=None;self.browser.favorites=false;self.browser.user_only=true;self.browser.scroll=0.;},Err(e)=>self.browser.error=e}},Action::Cancel=>self.browser.saving=false,
         Action::Delete(id)=>{self.result(self.bridge.delete_user_preset(&id));self.filter_changed();},
     }ctx.request_redraw();}
     /// Open a focused value field; exposed for preview harnesses as well as the context menu.
@@ -245,12 +256,13 @@ impl EditorApp {
     fn wave_point(p:Point)->(usize,u8){let x=((p.x-WAVE_PLOT.x0)/WAVE_PLOT.width()*32.).floor().clamp(0.,31.)as usize;let y=((PLOT.y1-p.y)/PLOT.height()*15.).round().clamp(0.,15.)as u8;(x,y)}
     fn draw_wave(&self,d:&Drag,p:Point){let (a,av)=Self::wave_point(if self.ui.wave_tool==WaveTool::Line{d.origin}else{d.last});let (b,bv)=Self::wave_point(p);let mut w=if self.ui.wave_tool==WaveTool::Line{d.wave}else{self.bridge.wave()};for (i,v) in w.iter_mut().enumerate().take(a.max(b)+1).skip(a.min(b)){let t=if a==b{1.}else{(i as f64-a as f64)/(b as f64-a as f64)};*v=(av as f64+(bv as f64-av as f64)*t).round()as u8;}self.bridge.set_wave(w);}
 }
-fn add_form(out:&mut Vec<Control>,app:&EditorApp){let mut add=|r,label,action|out.push(Control{rect:r,label,action,active:false});add(Rect::new(240.,207.,660.,246.),app.browser.save_name.clone(),Action::SaveName);for(i,c)in Category::ALL.iter().enumerate(){add(Rect::new(240.+i as f64*70.,264.,305.+i as f64*70.,294.),c.title().into(),Action::SaveCategory(*c));}add(Rect::new(440.,334.,540.,369.),app.text("Сохранить","Save").into(),Action::Save);add(Rect::new(552.,334.,660.,369.),app.text("Отмена","Cancel").into(),Action::Cancel);}
+fn add_form(out:&mut Vec<Control>,app:&EditorApp){let mut add=|r,label,action|out.push(Control{rect:r,label,action,active:false});add(Rect::new(240.,207.,660.,246.),app.browser.save_name.clone(),Action::SaveName);for(i,c)in Category::ALL.iter().enumerate(){add(Rect::new(240.+i as f64*70.,264.,305.+i as f64*70.,294.),c.title().into(),Action::SaveCategory(*c));}add(Rect::new(440.,334.,540.,369.),app.text("Сохранить","Save").into(),Action::Save);add(Rect::new(552.,334.,660.,369.),app.text("Отмена","Cancel").into(),Action::Cancel);for c in out.iter_mut(){c.active=matches!(c.action,Action::Save)||matches!(c.action,Action::SaveCategory(category) if category==app.browser.save_category);}}
 impl App for EditorApp {
     fn size(&self)->Size{Size::new(900.,560.)}
     fn event(&mut self,event:&Event,ctx:&mut EventCtx){match event {
         Event::MouseDown(e)=>{
             self.finish_drag();self.edit_before=Some(crate::history::Snapshot::capture(&*self.bridge));self.hover=e.pos;
+            if e.button==Some(MouseButton::Left){self.press_rect=self.hit(e.pos).map(|c|c.rect);self.press_opacity=1.;}
             if e.button==Some(MouseButton::Right)&&self.wave_editable()&&WAVE_PLOT.contains(e.pos){
                 self.edit_before=None;ctx.show_context_menu(self.wave_menu(),e.pos);return;
             }
@@ -304,8 +316,8 @@ impl App for EditorApp {
         Event::MenuItemSelected(2)=>{if let Some(id)=self.menu_param{self.edit_value(id,ctx);}},
         Event::MenuItemSelected(n)=>{self.menu_selected(*n);ctx.request_redraw();},Event::TextFocusLost=>{self.text_editing=false;self.finish_drag();ctx.end_infinite_drag();ctx.request_redraw();},_=>{}
     }}
-    fn frame(&mut self,c:&mut Canvas,dt:f64){self.transition=(self.transition-dt).max(0.);self.haptic_cooldown=(self.haptic_cooldown-dt).max(0.);let target=self.hit(self.hover).map(|c|c.rect);if target.is_some(){self.hover_rect=target;}let goal=if target.is_some(){1.0}else{0.0};let k=1.0-(-dt/0.065).exp();self.hover_opacity+=(goal-self.hover_opacity)*k;if (goal-self.hover_opacity).abs()<0.005{self.hover_opacity=goal;}crate::paint::paint(self,c);}
-    fn needs_redraw(&mut self)->bool{let generation=self.bridge.state_generation();let recalled=generation!=self.last_generation;if recalled{self.finish_drag();self.history.clear();self.edit_before=None;self.comparison=None;self.comparison_b=false;self.ui=self.bridge.ui_state();self.browser.selected=self.bridge.current_preset().id;self.last_generation=generation;}let values:Vec<_>=PARAMS.iter().map(|p|self.bridge.param_modulated(p.id)).collect();let mut t=self.bridge.telemetry();t.frame=0;if t.active_voices==0 {t.lfsr=0;t.wave_step=None;t.arp_step=None;t.pitch_offset_st=0.;t.env_level=[0.;4];}let p=self.bridge.current_preset();if p.id!=self.last_preset.id{self.history.clear();self.edit_before=None;self.comparison=None;self.comparison_b=false;}let changed=recalled||values!=self.last_values||t!=self.last_telemetry||p!=self.last_preset;self.last_values=values;self.last_telemetry=t;self.last_preset=p;changed||self.transition>0.||self.haptic_cooldown>0.||(self.hover_opacity-if self.hit(self.hover).is_some(){1.0}else{0.0}).abs()>0.005}
+    fn frame(&mut self,c:&mut Canvas,dt:f64){if self.drag.is_none(){self.press_opacity=(self.press_opacity-dt/0.12).max(0.);}self.transition=(self.transition-dt).max(0.);self.haptic_cooldown=(self.haptic_cooldown-dt).max(0.);let target=self.hit(self.hover).map(|c|c.rect);if target.is_some(){self.hover_rect=target;}let goal=if target.is_some(){1.0}else{0.0};let k=1.0-(-dt/0.065).exp();self.hover_opacity+=(goal-self.hover_opacity)*k;if (goal-self.hover_opacity).abs()<0.005{self.hover_opacity=goal;}crate::paint::paint(self,c);}
+    fn needs_redraw(&mut self)->bool{let generation=self.bridge.state_generation();let recalled=generation!=self.last_generation;if recalled{self.finish_drag();self.history.clear();self.edit_before=None;self.comparison=None;self.comparison_b=false;self.ui=self.bridge.ui_state();self.browser.selected=self.bridge.current_preset().id;self.last_generation=generation;}let values:Vec<_>=PARAMS.iter().map(|p|self.bridge.param_modulated(p.id)).collect();let mut t=self.bridge.telemetry();t.frame=0;if t.active_voices==0 {t.lfsr=0;t.wave_step=None;t.arp_step=None;t.pitch_offset_st=0.;t.env_level=[0.;4];}let p=self.bridge.current_preset();if p.id!=self.last_preset.id{self.history.clear();self.edit_before=None;self.comparison=None;self.comparison_b=false;}let changed=recalled||values!=self.last_values||t!=self.last_telemetry||p!=self.last_preset;self.last_values=values;self.last_telemetry=t;self.last_preset=p;changed||self.transition>0.||self.press_opacity>0.||self.haptic_cooldown>0.||(self.hover_opacity-if self.hit(self.hover).is_some(){1.0}else{0.0}).abs()>0.005}
     fn cursor(&self)->Cursor{if let Some(c)=self.hit(self.hover){if matches!(c.action,Action::Search|Action::SaveName|Action::ValueField){Cursor::IBeam}else if matches!(c.action,Action::Macro(_)){Cursor::ResizeHorizontal}else if matches!(c.action,Action::Param(_)){Cursor::ResizeVertical}else{Cursor::Hand}}else if WAVE_PLOT.contains(self.hover)&&self.wave_editable(){Cursor::Crosshair}else{Cursor::Arrow}}
 }
 impl Drop for EditorApp {fn drop(&mut self){self.finish_drag();}}
