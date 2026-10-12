@@ -675,6 +675,7 @@ fn native_factory_presets_restore_whole_sound_and_keep_instance_preferences() {
         count: unsafe extern "C" fn(*const clap_plugin) -> u32,
         get: unsafe extern "C" fn(*const clap_plugin, u32, *mut Info) -> bool,
         load: unsafe extern "C" fn(*const clap_plugin, i32) -> bool,
+        current: unsafe extern "C" fn(*const clap_plugin, *mut Info) -> bool,
     }
     let inst = Instance::new();
     let mut json = state_json(&inst.save());
@@ -694,6 +695,10 @@ fn native_factory_presets_restore_whole_sound_and_keep_instance_preferences() {
             assert_eq!(info.number, expected.preset.number as i32);
             assert_eq!(CStr::from_ptr(info.name.as_ptr()).to_str().unwrap(), expected.preset.name);
             assert!((ext.load)(inst.plugin, info.number));
+            let mut current = Info { number: -1, name: [0; 256] };
+            assert!((ext.current)(inst.plugin, &mut current));
+            assert_eq!(current.number, info.number);
+            assert_eq!(current.name, info.name);
             let json = state_json(&inst.save());
             let restored: nih_plug::prelude::PluginState = serde_json::from_value(json.clone()).unwrap();
             let values = pixl::state::values_from_plugin_state(&restored);

@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 pub struct HostNotifications {
     host: AtomicPtr<clap_host>,
     pending: AtomicBool,
+    preset_pending: AtomicBool,
 }
 impl HostNotifications {
     pub(crate) fn new(host: *const clap_host) -> Self {
-        Self { host: AtomicPtr::new(host.cast_mut()), pending: AtomicBool::new(false) }
+        Self { host: AtomicPtr::new(host.cast_mut()), pending: AtomicBool::new(false), preset_pending: AtomicBool::new(false) }
     }
     /// GUI thread only. Defer the notification until locks held by the edit are released.
     pub(crate) fn changed(&self) {
@@ -22,6 +23,8 @@ impl HostNotifications {
         }
     }
     pub(crate) fn take(&self) -> bool { self.pending.swap(false, Ordering::AcqRel) }
+    pub(crate) fn preset_changed(&self) { self.preset_pending.store(true, Ordering::Release); self.changed(); }
+    pub(crate) fn take_preset(&self) -> bool { self.preset_pending.swap(false, Ordering::AcqRel) }
     pub(crate) fn detach(&self) { self.host.store(std::ptr::null_mut(), Ordering::Release); }
 }
 

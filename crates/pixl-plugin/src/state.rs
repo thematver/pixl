@@ -110,6 +110,10 @@ impl SharedState {
         if let Some(host) = self.host_notifications.lock().as_ref() { host.changed(); }
     }
 
+    pub(crate) fn notify_preset(&self) {
+        if let Some(host) = self.host_notifications.lock().as_ref() { host.preset_changed(); }
+    }
+
     /// Current UI scale, sanitized.
     pub fn ui_scale(&self) -> f32 {
         sanitize_scale(self.ui.lock().scale)

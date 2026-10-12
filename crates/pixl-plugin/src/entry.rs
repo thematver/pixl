@@ -97,13 +97,37 @@ struct FactoryPresets {
     count: unsafe extern "C" fn(*const clap_plugin) -> u32,
     get: unsafe extern "C" fn(*const clap_plugin, u32, *mut FactoryPresetInfo) -> bool,
     load: unsafe extern "C" fn(*const clap_plugin, i32) -> bool,
+    current: unsafe extern "C" fn(*const clap_plugin, *mut FactoryPresetInfo) -> bool,
 }
 
 static FACTORY_PRESETS: FactoryPresets = FactoryPresets {
     count: factory_preset_count,
     get: factory_preset_get,
     load: factory_preset_load,
+    current: factory_preset_current,
 };
+
+fn preset_info(info: &mut FactoryPresetInfo, number: i32, name: &str) {
+    info.number = number;
+    info.name.fill(0);
+    let mut len = name.len().min(info.name.len() - 1);
+    while !name.is_char_boundary(len) { len -= 1; }
+    for (dst, src) in info.name.iter_mut().zip(name.as_bytes()[..len].iter()) { *dst = *src as c_char; }
+}
+
+unsafe extern "C" fn factory_preset_current(plugin: *const clap_plugin, info: *mut FactoryPresetInfo) -> bool {
+    let Some(proxy) = (unsafe { proxy_of(plugin) }) else { return false };
+    let Some(info) = (unsafe { info.as_mut() }) else { return false };
+    let state = unsafe { &*proxy.wrapper }.get_state_object();
+    let Some(meta) = state.fields.get(crate::state::FIELD_PRESET)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else { return false };
+    let Some(name) = meta["name"].as_str() else { return false };
+    let number = if meta["id"].as_str().is_some_and(|id| id.starts_with("factory:")) && meta["modified"] == false {
+        meta["number"].as_i64().unwrap_or(-1) as i32
+    } else { -1 };
+    preset_info(info, number, name);
+    true
+}
 
 unsafe extern "C" fn factory_preset_count(_plugin: *const clap_plugin) -> u32 {
     crate::presets::factory_library().presets.len() as u32
@@ -116,13 +140,8 @@ unsafe extern "C" fn factory_preset_get(
 ) -> bool {
     let Some(preset) = crate::presets::factory_library().presets.get(index as usize) else { return false };
     let Some(info) = (unsafe { info.as_mut() }) else { return false };
-    info.number = preset.preset.number as i32;
-    info.name.fill(0);
     // Truncate only on a UTF-8 boundary and always terminate the C string.
-    let name = &preset.preset.name;
-    let mut len = name.len().min(info.name.len() - 1);
-    while !name.is_char_boundary(len) { len -= 1; }
-    for (dst, src) in info.name.iter_mut().zip(name.as_bytes()[..len].iter()) { *dst = *src as c_char; }
+    preset_info(info, preset.preset.number as i32, &preset.preset.name);
     true
 }
 
@@ -283,6 +302,7 @@ unsafe extern "C" fn on_main_thread(plugin: *const clap_plugin) {
             f(proxy.inner);
         }
         if proxy.notifications.take() {
+            if proxy.notifications.take_preset() { rescan_values(proxy.host); }
             if let Some(mark_dirty) = host_extension::<clap_host_state>(proxy.host, CLAP_EXT_STATE).and_then(|s| s.mark_dirty) {
                 mark_dirty(proxy.host);
             }

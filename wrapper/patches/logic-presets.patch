@@ -1,18 +1,19 @@
 diff --git a/src/detail/auv2/auv2_base_classes.h b/src/detail/auv2/auv2_base_classes.h
-index 2db27a8..2b7580a 100644
+index 2db27a8..9c73ae9 100644
 --- a/src/detail/auv2/auv2_base_classes.h
 +++ b/src/detail/auv2/auv2_base_classes.h
-@@ -558,6 +558,9 @@ class WrapAsAUV2 : public ausdk::AUBase,
+@@ -558,6 +558,10 @@ class WrapAsAUV2 : public ausdk::AUBase,
      CFRelease(num);
    }
  
++  void syncCurrentPreset();
 +  OSStatus GetPresets(CFArrayRef *outData) const override;
 +  OSStatus NewFactoryPresetSet(const AUPreset &preset) override;
 +  OSStatus NewCustomPresetSet(const AUPreset &preset) override;
    OSStatus SaveState(CFPropertyListRef *ptPList) override;
    OSStatus RestoreState(CFPropertyListRef plist) override;
  
-@@ -580,6 +583,7 @@ class WrapAsAUV2 : public ausdk::AUBase,
+@@ -580,6 +584,7 @@ class WrapAsAUV2 : public ausdk::AUBase,
    // ---------------- Clap::IHost
    void mark_dirty() override
    {
@@ -21,7 +22,7 @@ index 2db27a8..2b7580a 100644
    void restartPlugin() override
    {
 diff --git a/src/wrapasauv2.cpp b/src/wrapasauv2.cpp
-index ca783d1..5947ed9 100644
+index ca783d1..9722932 100644
 --- a/src/wrapasauv2.cpp
 +++ b/src/wrapasauv2.cpp
 @@ -4,6 +4,7 @@
@@ -32,7 +33,40 @@ index ca783d1..5947ed9 100644
  
  extern bool fillAudioUnitCocoaView(AudioUnitCocoaViewInfo *viewInfo, std::shared_ptr<Clap::Plugin>);
  
-@@ -1366,6 +1367,79 @@ void WrapAsAUV2::onIdle()
+@@ -476,7 +477,31 @@ OSStatus WrapAsAUV2::GetParameterList(AudioUnitScope inScope, AudioUnitParameter
+ 
+ void WrapAsAUV2::param_rescan(clap_param_rescan_flags flags)
+ {
+-  // Re-call setup parameters which will just reset info if the param exists
++  // A value-only rescan after recall must not rebuild Logic's parameter tree.
++  if (flags == CLAP_PARAM_RESCAN_VALUES)
++  {
++    auto guarantee_mainthread = _plugin->AlwaysMainThread();
++    std::vector<AudioUnitParameterID> ids;
++    {
++      std::lock_guard<std::mutex> guard(_paramTreeMutex);
++      ids = _orderedParameterList;
++    }
++    for (auto id : ids)
++    {
++      double value = 0;
++      if (_plugin->_ext._params->get_value(_plugin->_plugin, id, &value))
++      {
++        Globals()->SetParameter(id, value);
++        AudioUnitEvent event{};
++        event.mEventType = kAudioUnitEvent_ParameterValueChange;
++        event.mArgument.mParameter = {GetComponentInstance(), id, kAudioUnitScope_Global, 0};
++        AUEventListenerNotify(nullptr, nullptr, &event);
++      }
++    }
++    syncCurrentPreset();
++    PropertyChanged(kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0);
++    return;
++  }
+   setupParameters(_plugin->_plugin, _plugin->_ext._params);
+ 
+   // if ( flags & CLAP_PARAM_RESCAN_ALL) // TODO: check out how differentiated we can do this
+@@ -1366,6 +1391,94 @@ void WrapAsAUV2::onIdle()
    }
  }
  
@@ -56,6 +90,21 @@ index ca783d1..5947ed9 100644
 +  return static_cast<const PixlFactoryPresets *>(
 +      plugin->_plugin->get_extension(plugin->_plugin, PIXL_FACTORY_PRESETS_ID));
 +}
++void WrapAsAUV2::syncCurrentPreset()
++{
++  const auto *ext = pixlPresets(_plugin);
++  PixlFactoryPresetInfo info{};
++  if (!ext || !ext->current(_plugin->_plugin, &info)) return;
++  auto name = CFStringCreateWithCString(nullptr, info.name, kCFStringEncodingUTF8);
++  if (!name) return;
++  AUPreset preset{info.number, name};
++  if (info.number >= 0) SetAFactoryPresetAsCurrent(preset);
++  else AUBase::NewCustomPresetSet(preset);
++  if (_current_program_name) CFRelease(_current_program_name);
++  _current_program_name = name;
++  PropertyChanged(kAudioUnitProperty_PresentPreset, kAudioUnitScope_Global, 0);
++}
++
 +OSStatus WrapAsAUV2::GetPresets(CFArrayRef *outData) const
 +{
 +  const auto *ext = pixlPresets(_plugin);
@@ -112,7 +161,7 @@ index ca783d1..5947ed9 100644
  OSStatus WrapAsAUV2::SaveState(CFPropertyListRef *ptPList)
  {
    if (!ptPList) return kAudioUnitErr_InvalidParameter;
-@@ -1381,7 +1455,7 @@ OSStatus WrapAsAUV2::SaveState(CFPropertyListRef *ptPList)
+@@ -1381,7 +1494,7 @@ OSStatus WrapAsAUV2::SaveState(CFPropertyListRef *ptPList)
    else
    {
      Clap::StateMemento chunk;
@@ -121,7 +170,7 @@ index ca783d1..5947ed9 100644
  
  #if DICTIONARY_STREAM_FORMAT_JUCE
      auto err = ausdk::AUBase::SaveState(ptPList);
-@@ -1440,7 +1514,21 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+@@ -1440,7 +1553,21 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
  
    if (!IsInitialized()) return kAudioUnitErr_Uninitialized;
  
@@ -143,7 +192,7 @@ index ca783d1..5947ed9 100644
  
    // Find 'data' key
    const void *pData = CFDictionaryGetValue(tDict, CFSTR(kAUPresetDataKey));
-@@ -1481,10 +1569,7 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+@@ -1481,10 +1608,7 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
  #endif
  
    const void *pName = CFDictionaryGetValue(tDict, CFSTR(kAUPresetNameKey));
@@ -155,7 +204,7 @@ index ca783d1..5947ed9 100644
  
    CFDataRef tData = CFDataRef(pData);
  
-@@ -1497,10 +1582,19 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
+@@ -1497,10 +1621,19 @@ OSStatus WrapAsAUV2::RestoreState(CFPropertyListRef plist)
      {
        Clap::StateMemento chunk;
        chunk.setData(pData, lLen);
@@ -177,3 +226,11 @@ index ca783d1..5947ed9 100644
  }
  
  bool WrapAsAUV2::isEffectFacade()
+@@ -1612,6 +1745,7 @@ UInt32 WrapAsAUV2::SupportedNumChannels(const AUChannelInfo **outInfo)
+ void WrapAsAUV2::PostConstructor()
+ {
+   Base::PostConstructor();
++  if (_plugin) syncCurrentPreset();
+ 
+   if (_plugin->_ext._audioports)
+   {
