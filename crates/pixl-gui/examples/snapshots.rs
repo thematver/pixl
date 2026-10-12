@@ -24,6 +24,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
         ("17-free-envelope",Channel::P1,Some(Focus::Env),ChipMode::Free),
         ("18-en-browser",Channel::Wave,None,ChipMode::Gb),
         ("19-wave-tools",Channel::Wave,None,ChipMode::Gb),
+        ("20-exact-value",Channel::Wave,None,ChipMode::Gb),
+        ("21-invalid-value",Channel::Wave,None,ChipMode::Gb),
     ];
     let mut harness=pixl_gfx::Headless::new()?;
     for(name,channel,focus,chip)in states{let bridge=Arc::new(MockBridge::new());bridge.set_param_once(ParamId::Chip,chip.index()as f32);bridge.animate(0.7);let mut app=EditorApp::new(bridge);app.ui.channel=channel;app.ui.focus=focus;
@@ -35,6 +37,14 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
                 pos:pixl_gfx::kurbo::Point::new(432.,225.),delta:pixl_gfx::kurbo::Vec2::ZERO,
                 button:None,buttons:pixl_gfx::MouseButtons::NONE,mods:pixl_gfx::Modifiers::default(),click_count:0,
             }));
+        }
+        if name=="20-exact-value"||name=="21-invalid-value" {
+            let mut ctx=pixl_gfx::EventCtx::new(harness.text(),2.,false,false);
+            app.edit_value(ParamId::VibRate,&mut ctx);
+            if name=="21-invalid-value" {
+                pixl_gfx::App::event(&mut app,&pixl_gfx::Event::TextInput("oops".into()),&mut ctx);
+                pixl_gfx::App::event(&mut app,&pixl_gfx::Event::TextCommand(pixl_gfx::TextCommand::InsertNewline),&mut ctx);
+            }
         }
         let path=format!("{dir}/{name}.png");harness.render(&mut app,2.)?.save_png(&path)?;println!("{path}");
     }Ok(())

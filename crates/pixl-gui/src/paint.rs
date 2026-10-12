@@ -12,7 +12,8 @@ pub(crate) fn paint(app:&EditorApp,c:&mut Canvas){
     c.fill_rounded_rect(Rect::new(654.,10.,804.,42.),8.,rgb(0xECE9E3));
     c.fill_rounded_rect(Rect::new(20.,106.,880.,356.),10.,rgb(0xFFFFFF));c.stroke_rounded_rect(Rect::new(20.,106.,880.,356.),10.,1.,rgb(LINE));
     if !app.browser.open{hero(app,c);}else{c.fill_rect(Rect::new(0.,52.,900.,560.),rgb(BG));}
-    for control in app.controls(){let r=control.rect;let hovered=r.contains(app.hover);match &control.action {
+    for control in app.base_controls(){let r=control.rect;let hovered=r.contains(app.hover);match &control.action {
+        Action::Undo|Action::Redo=>{c.fill_rounded_rect(r,5.,rgb(if hovered&&control.active{0xE7E4DE}else{0xF1EFEA}));center(c,r,&control.label,9.,if control.active{INK}else{0xC9C5BC});},
         Action::Settings=>{text(c,r,"PIXL",18.,INK,false);c.fill_rect(Rect::new(76.,23.,83.,30.),rgb(A));},
         Action::Toggle(id)=>{let p=r.center();if app.bridge.param(*id)>0.{c.fill_circle(p,3.5,rgb(A));}else{c.stroke_circle(p,3.5,1.5,rgb(0xC9C5BC));}},
         Action::Focus(Some(f)) if TILES.iter().any(|t|t.0==*f)&&r.y0>360.=>tile(app,c,control.rect,*f,&control.label,hovered),
@@ -29,8 +30,9 @@ pub(crate) fn paint(app:&EditorApp,c:&mut Canvas){
     if app.browser.open{browser_details(app,c);field(app,c);}else{
         label(c,20.,497.,"MACRO");
         c.line((718.,70.),(718.,88.),1.,rgb(LINE));text(c,Rect::new(728.,66.,880.,92.),match app.bridge.param(ParamId::Chip)as u8{0=>"RICOH 2A03 · 4 CH",1=>"DMG-CPU · 4 CH",_=>"FREE · 4 CH"},9.,MUT,true);
-        text(c,Rect::new(20.,535.,750.,553.),app.text("SHIFT / ⌘ — ТОЧНО · ⌥ / ДВОЙНОЙ КЛИК — СБРОС","SHIFT / ⌘ — FINE · ⌥ / DOUBLE CLICK — RESET"),9.,MUT,true);
+        text(c,Rect::new(20.,535.,620.,553.),app.text("SHIFT / ⌘ — ТОЧНО · ⌥ / ДВОЙНОЙ КЛИК — СБРОС","SHIFT / ⌘ — FINE · ⌥ / DOUBLE CLICK — RESET"),9.,MUT,true);
     }
+    if app.value_entry.is_some(){value_entry(app,c);}
     if !app.tip.is_empty(){let x=app.hover.x.clamp(10.,690.);let y=app.hover.y.clamp(35.,500.)-30.;c.fill_rounded_rect(Rect::new(x,y,x+190.,y+25.),5.,rgb(INK));text(c,Rect::new(x+7.,y,x+183.,y+25.),&app.tip,10.,0xFFFFFF,true);}
 }
 fn assignment(app:&EditorApp,c:&mut Canvas,r:Rect,id:ParamId){if app.assign{if let Some(d)=app.bridge.macro_assignments().depth(app.ui.macro_selected as usize,id){c.stroke(&r.to_rounded_rect(5.),&Stroke::new(1.).with_dashes(0.,[3.,2.]),rgb(A));let badge=Rect::new(r.x1-72.,r.y0-10.,r.x1,r.y0+4.);c.fill_rounded_rect(badge,4.,rgb(A));text(c,badge,&format!("M{} {:+.0}%",app.ui.macro_selected+1,d*100.),9.,INK,true);}}}
@@ -43,7 +45,7 @@ fn hero(app:&EditorApp,c:&mut Canvas){
     let rows=if wave_view{15}else{4};for j in 0..=rows{let y=PLOT.y0+j as f64/rows as f64*PLOT.height();c.line((21.,y),(879.,y),1.,rgb(0xEFEDE8));}for i in 1..32{let x=21.+i as f64*858./32.;c.line((x,PLOT.y0-8.),(x,PLOT.y1+8.),1.,rgb(0xEFEDE8));}
     let get=|id|app.bridge.param_modulated(id)as f64; let mut pts=Vec::new();let mut ghost=Vec::new();
     let title=match app.ui.focus{Some(Focus::Env)=>format!("ENVELOPE · {}",app.ui.channel.label()),Some(Focus::Sweep)=>"PITCH SWEEP".into(),Some(Focus::Vibrato)=>"VIBRATO".into(),Some(Focus::Arp)=>"ARPEGGIATOR".into(),Some(Focus::Crush)=>"BITCRUSH".into(),Some(Focus::Glide)=>"GLIDE / PORTAMENTO".into(),Some(Focus::Unison)=>"UNISON".into(),Some(Focus::Echo)=>"STEREO ECHO".into(),None=>match app.ui.channel{Channel::Wave if chip==ChipMode::Nes=>"NES 2A03 · TRIANGLE · LOCKED".into(),Channel::Wave=>"32 × 4-BIT WAVE RAM".into(),Channel::P1|Channel::P2=>format!("{} · DUTY {}",app.ui.channel.label(),ParamId::duty(app.ui.channel).unwrap().format(app.bridge.param(ParamId::duty(app.ui.channel).unwrap()))),Channel::Noise=>format!("NOISE · LFSR {}-BIT",if get(ParamId::NsMode)>0.{7}else{15})}};
-    let title_x=if app.ui.focus.is_some(){137.}else{34.};let title_end=app.controls().iter().filter(|c|c.rect.y0==116.&&c.rect.x0>title_x).map(|c|c.rect.x0).fold(850.,f64::min);text(c,Rect::new(title_x,116.,title_end-8.,138.),&title,10.,INK,true);
+    let title_x=if app.ui.focus.is_some(){137.}else{34.};let title_end=app.base_controls().iter().filter(|c|c.rect.y0==116.&&c.rect.x0>title_x).map(|c|c.rect.x0).fold(850.,f64::min);text(c,Rect::new(title_x,116.,title_end-8.,138.),&title,10.,INK,true);
     if wave_view {
         let w=if chip==ChipMode::Nes{wave::NES_TRIANGLE}else{app.bridge.wave()};let step=858./32.;let playing=app.bridge.telemetry().wave_step;
         for(i,v)in w.iter().enumerate(){let x=21.+i as f64*step;let y=PLOT.y1-*v as f64/15.*PLOT.height();c.fill_rect(Rect::new(x+2.,y,x+step-2.,PLOT.y1+8.),rgba(A,0.13));if playing==Some(i as u8){c.fill_rect(Rect::new(x,PLOT.y0-6.,x+step,PLOT.y1+8.),rgba(A,0.08));}pts.push((x,y));pts.push((x+step,y));}
@@ -93,9 +95,34 @@ fn browser_details(app:&EditorApp,c:&mut Canvas){
     let n=app.filtered_presets().len();if n>10{let h=380.*10./n as f64;let y=108.+app.browser.scroll/(n as f64*38.)*380.;c.fill_rounded_rect(Rect::new(631.,y,634.,y+h),2.,rgb(0xC9C5BC));}
     if !app.browser.error.is_empty(){text(c,Rect::new(180.,488.,630.,509.),&app.browser.error,10.,A,false);}
     if app.browser.saving {c.fill_rect(Rect::new(0.,52.,900.,560.),rgba(INK,0.24));c.fill_rounded_rect(Rect::new(215.,155.,685.,397.),12.,rgb(BG));text(c,Rect::new(240.,165.,660.,194.),app.text("Сохранить пресет","Save preset"),18.,INK,false);
-        for control in app.controls().iter().filter(|c|c.rect.y0>52.){c.fill_rounded_rect(control.rect,6.,rgb(0xFFFFFF));c.stroke_rounded_rect(control.rect,6.,1.,rgb(LINE));center(c,control.rect.inflate(-8.,0.),&control.label,12.,INK);}
+        for control in app.base_controls().iter().filter(|c|c.rect.y0>52.){c.fill_rounded_rect(control.rect,6.,rgb(0xFFFFFF));c.stroke_rounded_rect(control.rect,6.,1.,rgb(LINE));center(c,control.rect.inflate(-8.,0.),&control.label,12.,INK);}
         text(c,Rect::new(240.,304.,660.,327.),&app.browser.error,10.,A,false);
     }
 }
 
 fn field(app:&EditorApp,c:&mut Canvas){let r=if app.browser.saving{Rect::new(240.,207.,660.,246.)}else{Rect::new(12.,68.,158.,102.)};let value=app.field();let style=TextStyle::sans(12.).color(rgb(INK));c.fill_rounded_rect(r,6.,rgb(0xFFFFFF));c.stroke_rounded_rect(r,6.,1.,rgb(LINE));c.push_clip(&r);let x=r.x0+8.;let y=r.center().y-8.;let layout=c.layout(value,&style);let mut caret=app.caret.min(value.len());while !value.is_char_boundary(caret){caret-=1;}let mut anchor=app.anchor.min(value.len());while !value.is_char_boundary(anchor){anchor-=1;}for rect in layout.selection_rects(anchor.min(caret)..anchor.max(caret)){c.fill_rect(rect+pixl_gfx::kurbo::Vec2::new(x,y),rgba(A,0.2));}c.text((x,y),if value.is_empty(){app.text("Поиск…","Search…")}else{value},&style);let cursor=layout.caret_rect(caret)+pixl_gfx::kurbo::Vec2::new(x,y);c.fill_rect(Rect::new(cursor.x0,cursor.y0,cursor.x0+1.,cursor.y1),rgb(A));if !app.preedit.is_empty(){c.text((cursor.x0,y),&app.preedit,&style);let w=c.measure(&app.preedit,&style).width;c.line((cursor.x0,y+17.),(cursor.x0+w,y+17.),1.,rgb(A));}c.pop_clip();}
+
+fn value_entry(app:&EditorApp,c:&mut Canvas){
+    let Some(entry)=&app.value_entry else{return;};
+    c.fill_rect(c.bounds(),rgba(INK,0.25));
+    c.fill_rounded_rect(Rect::new(294.,181.,606.,376.),12.,rgb(BG));
+    c.stroke_rounded_rect(Rect::new(294.,181.,606.,376.),12.,1.,rgb(LINE));
+    text(c,Rect::new(320.,193.,580.,223.),entry.id.spec().name,17.,INK,false);
+    let field=Rect::new(320.,235.,580.,275.);
+    c.fill_rounded_rect(field,6.,rgb(0xFFFFFF));c.stroke_rounded_rect(field,6.,1.5,rgb(A));
+    let style=TextStyle::sans(16.).color(rgb(INK));let layout=c.layout(&entry.text,&style);
+    let mut caret=app.caret.min(entry.text.len());while !entry.text.is_char_boundary(caret){caret-=1;}
+    let mut anchor=app.anchor.min(entry.text.len());while !entry.text.is_char_boundary(anchor){anchor-=1;}
+    c.push_clip(&field.inflate(-8.,-2.));
+    let offset=pixl_gfx::kurbo::Vec2::new(330.,245.);
+    for rect in layout.selection_rects(anchor.min(caret)..anchor.max(caret)){c.fill_rect(rect+offset,rgba(A,0.2));}
+    c.text((330.,245.),&entry.text,&style);
+    let cursor=layout.caret_rect(caret)+offset;c.fill_rect(Rect::new(cursor.x0,cursor.y0,cursor.x0+1.,cursor.y1),rgb(A));
+    if !app.preedit.is_empty(){c.text((cursor.x0,245.),&app.preedit,&style);}
+    c.pop_clip();
+    text(c,Rect::new(320.,281.,580.,307.),if entry.error.is_empty(){app.text("ENTER — ПРИМЕНИТЬ · ESC — ОТМЕНА","ENTER TO APPLY · ESC TO CANCEL")}else{&entry.error},9.,if entry.error.is_empty(){MUT}else{A},true);
+    for control in app.controls().iter().filter(|c|!matches!(c.action,Action::ValueField)){
+        c.fill_rounded_rect(control.rect,6.,rgb(if control.active{INK}else{0xECE9E3}));
+        center(c,control.rect,&control.label,11.,if control.active{0xFFFFFF}else{INK});
+    }
+}
