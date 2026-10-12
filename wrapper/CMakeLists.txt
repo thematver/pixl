@@ -4,8 +4,8 @@
 # which exports the CLAP `clap_entry` symbol through nih-plug. clap-wrapper then
 # assembles self-contained CLAP, VST3 and AUv2 bundles that statically link it.
 #
-# Normally invoked through `cargo xtask bundle`, which builds the Rust library
-# first and passes PIXL_RUST_LIB.
+# Invoked through `make build`, which builds the Rust library first and passes
+# PIXL_RUST_LIB.
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -24,7 +24,7 @@ set(PIXL_BUNDLE_ID "audio.pixl.PIXL" CACHE STRING "Bundle identifier prefix")
 set(PIXL_OUTPUT_DIR "${CMAKE_BINARY_DIR}/out" CACHE PATH "Where the assembled bundles are written")
 
 if (NOT EXISTS "${PIXL_RUST_LIB}")
-    message(FATAL_ERROR "Rust static library not found at ${PIXL_RUST_LIB}. Run `cargo xtask bundle`.")
+    message(FATAL_ERROR "Rust static library not found at ${PIXL_RUST_LIB}. Run `make build`.")
 endif()
 
 set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE CACHE BOOL "" FORCE)
@@ -48,7 +48,8 @@ target_link_libraries(pixl-impl INTERFACE
     "-framework Foundation"
     "-framework CoreFoundation"
     "-framework AppKit"
-    "-framework WebKit"
+    "-framework Metal"
+    "-framework CoreGraphics"
     "-framework QuartzCore"
     "-framework CoreAudio"
     "-framework Security"

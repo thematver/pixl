@@ -24,7 +24,6 @@ use crate::text::TextSystem;
 use crate::GfxError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vello::kurbo::Size;
 use vello::wgpu;
 
 /// How long offscreen rendering waits for the shared GPU context to be created.
@@ -97,6 +96,8 @@ pub struct Headless {
     text: TextSystem,
     builder: FrameBuilder,
     target: Option<RenderTarget>,
+    text_focused: bool,
+    infinite_drag: bool,
 }
 
 impl std::fmt::Debug for Headless {
@@ -109,7 +110,14 @@ impl Headless {
     /// Creates an offscreen renderer (blocks until the shared GPU context exists).
     pub fn new() -> Result<Headless, GfxError> {
         let gpu = GpuContext::get_blocking(GPU_TIMEOUT)?;
-        Ok(Headless { gpu, text: TextSystem::new(), builder: FrameBuilder::default(), target: None })
+        Ok(Headless {
+            gpu,
+            text: TextSystem::new(),
+            builder: FrameBuilder::default(),
+            target: None,
+            text_focused: false,
+            infinite_drag: false,
+        })
     }
 
     /// The GPU context in use.
@@ -123,11 +131,25 @@ impl Headless {
     }
 
     /// Delivers `event` to `app` like a view would (with a 2× scale factor and no text
-    /// focus) and returns what the handler requested.
+    /// focus initially) and returns what the handler requested. Focus and drag requests
+    /// persist between events, just as they do in a native view.
     pub fn event(&mut self, app: &mut dyn App, event: &Event) -> Effects {
-        let mut ctx = EventCtx::new(&mut self.text, 2.0, false, false);
+        if matches!(event, Event::TextFocusLost) {
+            self.text_focused = false;
+        }
+        let mut ctx = EventCtx::new(&mut self.text, 2.0, self.text_focused, self.infinite_drag);
         app.event(event, &mut ctx);
-        ctx.into_effects()
+        let effects = ctx.into_effects();
+        if let Some(focus) = effects.text_focus {
+            self.text_focused = focus;
+        }
+        if let Some(drag) = effects.infinite_drag {
+            self.infinite_drag = drag;
+        }
+        if matches!(event, Event::MouseUp(_)) {
+            self.infinite_drag = false;
+        }
+        effects
     }
 
     /// Renders one frame of `app` at `scale` device pixels per logical point (2.0 = Retina)
@@ -136,7 +158,8 @@ impl Headless {
         self.refresh_gpu()?;
         let (placement, w, h) = self.placement(app, scale);
         let background = self.builder.build(app, &mut self.text, &placement, 0.0);
-        let target = self.target(w, h);
+        self.ensure_target(w, h);
+        let target = self.target.as_ref().ok_or_else(|| GfxError::Render("missing render target".into()))?;
         render_scene(&self.gpu, self.builder.scene(), target, background)?;
         read_back(&self.gpu, target)
     }
@@ -149,7 +172,8 @@ impl Headless {
         let t0 = Instant::now();
         let background = self.builder.build(app, &mut self.text, &placement, dt);
         let encode = t0.elapsed();
-        let target = self.target(w, h);
+        self.ensure_target(w, h);
+        let target = self.target.as_ref().ok_or_else(|| GfxError::Render("missing render target".into()))?;
         let t1 = Instant::now();
         render_scene(&self.gpu, self.builder.scene(), target, background)?;
         self.gpu
@@ -176,19 +200,19 @@ impl Headless {
         (placement, w, h)
     }
 
-    fn target(&mut self, w: u32, h: u32) -> &RenderTarget {
+    fn ensure_target(&mut self, w: u32, h: u32) {
         let gpu = &self.gpu;
         if !self.target.as_ref().is_some_and(|t| t.matches(gpu, w, h)) {
             self.target = Some(RenderTarget::new(gpu, w, h, wgpu::TextureUsages::COPY_SRC));
         }
-        self.target.get_or_insert_with(|| RenderTarget::new(gpu, w, h, wgpu::TextureUsages::COPY_SRC))
     }
 }
 
 fn read_back(gpu: &GpuContext, target: &RenderTarget) -> Result<Image, GfxError> {
     let (w, h) = (target.width, target.height);
     let unpadded = w as usize * 4;
-    let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+    let padded =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("pixl-gfx readback"),
         size: (padded * h as usize) as u64,

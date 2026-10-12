@@ -247,12 +247,7 @@ impl<'a> Canvas<'a> {
     }
 
     /// Fills a rounded rectangle with per-corner radii.
-    pub fn fill_rounded_rect_radii<'b>(
-        &mut self,
-        rect: Rect,
-        radii: RoundedRectRadii,
-        paint: impl Into<BrushRef<'b>>,
-    ) {
+    pub fn fill_rounded_rect_radii<'b>(&mut self, rect: Rect, radii: RoundedRectRadii, paint: impl Into<BrushRef<'b>>) {
         self.fill(&RoundedRect::from_rect(rect.abs(), radii), paint);
     }
 
@@ -265,7 +260,7 @@ impl<'a> Canvas<'a> {
     /// (`box-sizing: border-box`), with outer corner `radius`. Pixel-exact for integer
     /// rectangles and widths, like the browser.
     pub fn border<'b>(&mut self, rect: Rect, radius: f64, width: f64, paint: impl Into<BrushRef<'b>>) {
-        if !(width > 0.0) {
+        if !width.is_finite() || width <= 0.0 {
             return;
         }
         let rect = rect.abs();
@@ -391,7 +386,10 @@ impl<'a> Canvas<'a> {
         let sw = Icon::stroke_width_em(weight);
         let b = icon.bounds_em(sw);
         let center = center.into();
-        let t = self.device() * Affine::translate(center.to_vec2()) * Affine::scale(size) * Affine::translate(-b.center().to_vec2());
+        let t = self.device()
+            * Affine::translate(center.to_vec2())
+            * Affine::scale(size)
+            * Affine::translate(-b.center().to_vec2());
         icon.encode(self.scene, t, sw, paint.into());
     }
 

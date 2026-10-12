@@ -306,7 +306,9 @@ impl Icon {
                 shackle.line_to((0.38 + r, -0.42));
                 out.push(IconOp::Stroke(shackle, Stroke::new(sw * 1.15).with_caps(Cap::Butt)));
             }
-            Icon::ChevronLeft => out.push(IconOp::Stroke(polyline(&[(0.30, -0.58), (0.12, -0.36), (0.30, -0.14)]), round)),
+            Icon::ChevronLeft => {
+                out.push(IconOp::Stroke(polyline(&[(0.30, -0.58), (0.12, -0.36), (0.30, -0.14)]), round))
+            }
             Icon::ChevronRight => {
                 out.push(IconOp::Stroke(polyline(&[(0.12, -0.58), (0.30, -0.36), (0.12, -0.14)]), round));
             }
@@ -329,13 +331,22 @@ impl Icon {
                 p.extend(polyline(&[(0.28, -0.46), (0.12, -0.30), (0.28, -0.14)]));
                 out.push(IconOp::Stroke(p, round));
             }
-            Icon::TriangleRight => out.push(IconOp::Fill(triangle((0.17, AXIS - 0.21), (0.47, AXIS), (0.17, AXIS + 0.21)))),
-            Icon::TriangleLeft => out.push(IconOp::Fill(triangle((0.43, AXIS - 0.21), (0.13, AXIS), (0.43, AXIS + 0.21)))),
-            Icon::TriangleDown => out.push(IconOp::Fill(triangle((0.09, AXIS - 0.15), (0.51, AXIS - 0.15), (0.30, AXIS + 0.16)))),
-            Icon::TriangleUp => out.push(IconOp::Fill(triangle((0.09, AXIS + 0.15), (0.51, AXIS + 0.15), (0.30, AXIS - 0.16)))),
+            Icon::TriangleRight => {
+                out.push(IconOp::Fill(triangle((0.17, AXIS - 0.21), (0.47, AXIS), (0.17, AXIS + 0.21))))
+            }
+            Icon::TriangleLeft => {
+                out.push(IconOp::Fill(triangle((0.43, AXIS - 0.21), (0.13, AXIS), (0.43, AXIS + 0.21))))
+            }
+            Icon::TriangleDown => {
+                out.push(IconOp::Fill(triangle((0.09, AXIS - 0.15), (0.51, AXIS - 0.15), (0.30, AXIS + 0.16))))
+            }
+            Icon::TriangleUp => {
+                out.push(IconOp::Fill(triangle((0.09, AXIS + 0.15), (0.51, AXIS + 0.15), (0.30, AXIS - 0.16))))
+            }
             Icon::Check => out.push(IconOp::Stroke(polyline(&[(0.10, -0.33), (0.27, -0.12), (0.60, -0.62)]), round)),
             Icon::Note => {
-                let head = Affine::translate((0.21, -0.08)) * Affine::rotate(-0.35) * Affine::scale_non_uniform(0.14, 0.095);
+                let head =
+                    Affine::translate((0.21, -0.08)) * Affine::rotate(-0.35) * Affine::scale_non_uniform(0.14, 0.095);
                 out.push(IconOp::Fill(head * Circle::new((0.0, 0.0), 1.0).to_path(0.0001)));
                 let mut p = line(0.335, -0.10, 0.335, -0.72);
                 p.move_to((0.335, -0.72));
@@ -382,7 +393,10 @@ impl Icon {
                 let rad = 0.30;
                 let start = -std::f64::consts::FRAC_PI_2 - 0.35;
                 let mut p = BezPath::new();
-                p.extend(vello::kurbo::Arc::new(c, (rad, rad), start, -(std::f64::consts::TAU - 1.1), 0.0).append_iter(0.001));
+                p.extend(
+                    vello::kurbo::Arc::new(c, (rad, rad), start, -(std::f64::consts::TAU - 1.1), 0.0)
+                        .append_iter(0.001),
+                );
                 let tip = Point::new(0.18, -0.60);
                 p.extend(line(c.x - 0.02, c.y - 0.02, tip.x, tip.y));
                 p.extend(polyline(&[(tip.x, tip.y + 0.15), (tip.x, tip.y), (tip.x + 0.15, tip.y)]));
@@ -420,9 +434,9 @@ impl Icon {
     ) {
         for op in self.ops(sw) {
             match &op {
-                IconOp::Fill(p) => scene.fill(Fill::NonZero, transform, brush.clone(), None, p),
-                IconOp::FillEvenOdd(p) => scene.fill(Fill::EvenOdd, transform, brush.clone(), None, p),
-                IconOp::Stroke(p, s) => scene.stroke(s, transform, brush.clone(), None, p),
+                IconOp::Fill(p) => scene.fill(Fill::NonZero, transform, brush, None, p),
+                IconOp::FillEvenOdd(p) => scene.fill(Fill::EvenOdd, transform, brush, None, p),
+                IconOp::Stroke(p, s) => scene.stroke(s, transform, brush, None, p),
             }
         }
     }
@@ -525,7 +539,7 @@ mod tests {
                 // Stay roughly within the advance box and between descender and ascender.
                 assert!(b.x0 >= -0.05 && b.x1 <= icon.advance_em() + 0.05, "{icon:?} x-bounds {b:?}");
                 assert!(b.y0 >= -0.95 && b.y1 <= 0.2, "{icon:?} y-bounds {b:?}");
-                assert!(b.width() > 0.05 && b.height() > 0.05, "{icon:?} degenerate {b:?}");
+                assert!(b.width() >= sw * 0.99 && b.height() >= sw * 0.99, "{icon:?} degenerate {b:?}");
             }
         }
     }

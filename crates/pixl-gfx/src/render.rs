@@ -34,13 +34,12 @@ impl Placement {
         let backing = if backing.is_finite() && backing > 0.0 { backing.clamp(0.25, 8.0) } else { 1.0 };
         let zoom = (view.width / content.width).min(view.height / content.height);
         let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
-        let offset =
-            Vec2::new((view.width - content.width * zoom) * 0.5, (view.height - content.height * zoom) * 0.5);
+        let offset = Vec2::new((view.width - content.width * zoom) * 0.5, (view.height - content.height * zoom) * 0.5);
         Placement { content, zoom, offset, backing }
     }
 
     /// Logical → device pixel transform.
-    pub fn to_device(&self) -> Affine {
+    pub fn to_device(self) -> Affine {
         Affine::scale(self.backing) * Affine::translate(self.offset) * Affine::scale(self.zoom)
     }
 

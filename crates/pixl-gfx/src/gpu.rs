@@ -97,9 +97,8 @@ fn start_if_needed(slot: &mut Slot) {
     }
     *slot = Slot::Creating;
     let spawned = std::thread::Builder::new().name("pixl-gfx-gpu-init".into()).spawn(|| {
-        let result = std::panic::catch_unwind(GpuContext::create).unwrap_or_else(|_| {
-            Err(GfxError::Gpu("panic while creating the GPU context".into()))
-        });
+        let result = std::panic::catch_unwind(GpuContext::create)
+            .unwrap_or_else(|_| Err(GfxError::Gpu("panic while creating the GPU context".into())));
         let mut slot = lock_slot();
         *slot = match result {
             Ok(ctx) => {
@@ -173,6 +172,7 @@ impl GpuContext {
             power_preference: wgpu::PowerPreference::LowPower,
             force_fallback_adapter: false,
             compatible_surface: None,
+            ..Default::default()
         }))
         .map_err(|e| GfxError::Gpu(format!("no GPU adapter: {e}")))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

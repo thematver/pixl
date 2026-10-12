@@ -174,7 +174,7 @@ pub use icons::Icon;
 pub use text::{FontFamily, TextAlign, TextLayout, TextMetrics, TextOverflow, TextStyle, TextSystem, INK};
 
 #[cfg(target_os = "macos")]
-pub use platform::{clipboard, open_child_view, ViewHandle, ViewStats};
+pub use platform::{clipboard, open_child_view, run_standalone, ViewHandle, ViewStats};
 
 /// Re-export of the geometry crate used throughout the API (`Point`, `Rect`, `BezPath`,
 /// `Stroke`, `Affine`, …).

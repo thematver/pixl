@@ -506,13 +506,13 @@ impl TextLayout {
                 .font_size(run.size)
                 .transform(transform)
                 .normalized_coords(&run.coords)
-                .brush(brush.clone())
+                .brush(brush)
                 .hint(false)
                 .draw(Fill::NonZero, run.glyphs.iter().copied());
         }
         for b in &self.icons {
             let t = transform * Affine::translate(b.origin.to_vec2()) * Affine::scale(b.em);
-            b.icon.encode(scene, t, b.stroke, brush.clone());
+            b.icon.encode(scene, t, b.stroke, brush);
         }
     }
 }
@@ -684,8 +684,9 @@ impl TextSystem {
 
     /// Called by the renderer after every frame: advances the frame clock and evicts stale
     /// entries when the cache is large.
+    #[allow(clippy::manual_is_multiple_of)] // Keep compatible with Rust 1.85.
     pub(crate) fn end_frame(&mut self) {
-        self.frame += 1;
+        self.frame = self.frame.wrapping_add(1);
         if self.entries > CACHE_SOFT_LIMIT && self.frame % 30 == 0 {
             self.evict_older_than(self.frame.saturating_sub(CACHE_TTL_FRAMES));
         }
@@ -704,7 +705,7 @@ impl TextSystem {
 
     fn build(&mut self, text: &str, style: &TextStyle) -> TextLayout {
         let (display, shown_len): (Cow<'_, str>, usize) = match (style.overflow, style.max_width) {
-            (TextOverflow::Ellipsis, Some(w)) => self.ellipsize(text, style, w as f32),
+            (TextOverflow::Ellipsis, Some(w)) => self.ellipsize(text, style, w),
             _ => (Cow::Borrowed(text), text.len()),
         };
         let wrap = match style.overflow {
@@ -718,11 +719,8 @@ impl TextSystem {
 
     /// Returns the text to display and how many bytes of the original it shows.
     fn ellipsize<'t>(&mut self, text: &'t str, style: &TextStyle, max_w: f32) -> (Cow<'t, str>, usize) {
-        let single: Cow<'t, str> = if text.contains(['\n', '\r']) {
-            Cow::Owned(text.replace(['\n', '\r'], " "))
-        } else {
-            Cow::Borrowed(text)
-        };
+        let single: Cow<'t, str> =
+            if text.contains(['\n', '\r']) { Cow::Owned(text.replace(['\n', '\r'], " ")) } else { Cow::Borrowed(text) };
         let fits = |sys: &mut Self, s: &str| -> bool {
             let p = Prepared::new(s, style.family);
             sys.shape(&p, style, None).width() <= max_w + 0.01
@@ -829,7 +827,7 @@ fn extract(
             baseline: f64::from(m.baseline),
         });
         let li = li as u32;
-        let mut push_stop = |x: f32, byte: u32| {
+        let push_stop = |stops: &mut Vec<CaretStop>, x: f32, byte: u32| {
             if let Some(last) = stops.last() {
                 if last.line == li && last.byte == byte && (last.x - x).abs() < 0.01 {
                     return;
@@ -855,9 +853,9 @@ fn extract(
                     for cluster in run.visual_clusters() {
                         let r = cluster.text_range();
                         let (lead, trail) = if cluster.is_rtl() { (r.end, r.start) } else { (r.start, r.end) };
-                        push_stop(x, clamp_orig(prepared.to_orig(lead, !cluster.is_rtl())));
+                        push_stop(&mut stops, x, clamp_orig(prepared.to_orig(lead, !cluster.is_rtl())));
                         x += cluster.advance();
-                        push_stop(x, clamp_orig(prepared.to_orig(trail, cluster.is_rtl())));
+                        push_stop(&mut stops, x, clamp_orig(prepared.to_orig(trail, cluster.is_rtl())));
                     }
                 }
                 PositionedLayoutItem::InlineBox(b) => {
@@ -872,8 +870,8 @@ fn extract(
                         stroke: icon_stroke,
                     });
                     // Caret stops on both sides of the icon (original indices).
-                    push_stop(b.x, clamp_orig(sub.orig));
-                    push_stop(b.x + b.width, clamp_orig(sub.orig + sub.len));
+                    push_stop(&mut stops, b.x, clamp_orig(sub.orig));
+                    push_stop(&mut stops, b.x + b.width, clamp_orig(sub.orig + sub.len));
                 }
             }
         }
@@ -881,7 +879,7 @@ fn extract(
         if !stops.iter().any(|s| s.line == li) {
             let r = line.text_range();
             let x = m.offset;
-            push_stop(x, clamp_orig(prepared.to_orig(r.start, true)));
+            push_stop(&mut stops, x, clamp_orig(prepared.to_orig(r.start, true)));
         }
     }
     if lines.is_empty() {
@@ -903,7 +901,37 @@ fn extract(
     }
     stops.sort_by(|a, b| a.line.cmp(&b.line).then(a.x.total_cmp(&b.x)));
 
-    let width = f64::from(layout.width());
+    let width = if original.is_empty() { 0.0 } else { f64::from(layout.width()) };
+    // Parley aligns unwrapped text within its intrinsic width. Apply the remaining
+    // alignment-box offset to glyphs and carets together, without introducing wrapping.
+    let align_offset = if style.overflow != TextOverflow::Wrap || original.is_empty() {
+        let spare = style.max_width.map_or(0.0, |w| f64::from(w) - width);
+        match style.align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => spare * 0.5,
+            TextAlign::Right => spare,
+        }
+    } else {
+        0.0
+    };
+    if original.is_empty() {
+        runs.clear();
+        icons.clear();
+        stops.clear();
+        stops.push(CaretStop { line: 0, x: align_offset as f32, byte: 0 });
+    } else if align_offset != 0.0 {
+        for run in &mut runs {
+            for glyph in &mut run.glyphs {
+                glyph.x += align_offset as f32;
+            }
+        }
+        for icon in &mut icons {
+            icon.origin.x += align_offset;
+        }
+        for stop in &mut stops {
+            stop.x += align_offset as f32;
+        }
+    }
     let height = lines.last().map_or(0.0, |l| l.bottom).max(f64::from(layout.height()));
     let box_width = style.max_width.map_or(width, f64::from);
     TextLayout {
@@ -1027,6 +1055,18 @@ mod tests {
         assert!((left - (100.0 - w) * 0.5).abs() < 0.05, "{left} vs {}", (100.0 - w) * 0.5);
         let right = t.layout("ESC", &TextStyle::mono(10.0).align(TextAlign::Right).box_width(100.0));
         assert!((right.caret_rect(3).x0 - 100.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn visible_alignment_does_not_wrap_long_labels() {
+        let mut t = sys();
+        let text = "Hyrule Fanfare";
+        let width = t.measure(text, &TextStyle::sans(13.0)).width;
+        let style = TextStyle::sans(13.0).box_width(20.0).align(TextAlign::Right);
+        let layout = t.layout(text, &style);
+        assert_eq!(layout.metrics().lines, 1);
+        assert!((layout.caret_rect(0).x0 - (20.0 - width)).abs() < 0.05);
+        assert!((layout.caret_rect(text.len()).x0 - 20.0).abs() < 0.05);
     }
 
     #[test]
