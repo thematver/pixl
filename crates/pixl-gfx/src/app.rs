@@ -55,6 +55,8 @@ pub trait App {
 pub struct Effects {
     /// A frame was requested.
     pub redraw: bool,
+    /// Request a subtle alignment pulse on a supported trackpad.
+    pub haptic: bool,
     /// Cursor override for this event.
     pub cursor: Option<Cursor>,
     /// `Some(true)` = begin infinite drag, `Some(false)` = end it.
@@ -88,6 +90,9 @@ impl<'a> EventCtx<'a> {
     pub fn request_redraw(&mut self) {
         self.effects.redraw = true;
     }
+
+    /// Request tactile feedback for a meaningful control detent.
+    pub fn haptic_alignment(&mut self) { self.effects.haptic = true; }
 
     /// Sets the cursor now (overrides [`App::cursor`] for this event).
     pub fn set_cursor(&mut self, cursor: Cursor) {

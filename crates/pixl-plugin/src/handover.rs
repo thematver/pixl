@@ -518,6 +518,7 @@ impl EditorLoads {
             sh.macros.store(&b.state.macros);
             sh.mailbox.mark_committed(b.id);
             *sh.preset.lock() = b.meta;
+            sh.notify_preset();
         }
         for spec in PARAMS.iter() {
             if self.applied(sh, host, spec.id) {

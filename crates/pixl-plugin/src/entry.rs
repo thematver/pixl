@@ -40,7 +40,7 @@ use clap_sys::ext::note_ports::{
     clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_MIDI,
 };
 use clap_sys::ext::params::{clap_host_params, CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES};
-use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::state::{clap_host_state, clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::ext::thread_check::{clap_host_thread_check, CLAP_EXT_THREAD_CHECK};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use nih_plug::wrapper::clap::{
@@ -83,6 +83,90 @@ static HARDENED_STATE: clap_plugin_state = clap_plugin_state { save: Some(state_
 /// the MIDI dialect (see the module docs).
 static MIDI_NOTE_PORTS: clap_plugin_note_ports =
     clap_plugin_note_ports { count: Some(note_ports_count), get: Some(note_ports_get) };
+
+/// Private, versioned ABI shared with wrapper/pixl_factory_presets.h. All calls are
+/// main-thread only. Preset numbers are permanent library numbers, never list indices.
+#[repr(C)]
+struct FactoryPresetInfo {
+    number: i32,
+    name: [c_char; 256],
+}
+
+#[repr(C)]
+struct FactoryPresets {
+    count: unsafe extern "C" fn(*const clap_plugin) -> u32,
+    get: unsafe extern "C" fn(*const clap_plugin, u32, *mut FactoryPresetInfo) -> bool,
+    load: unsafe extern "C" fn(*const clap_plugin, i32) -> bool,
+    current: unsafe extern "C" fn(*const clap_plugin, *mut FactoryPresetInfo) -> bool,
+}
+
+static FACTORY_PRESETS: FactoryPresets = FactoryPresets {
+    count: factory_preset_count,
+    get: factory_preset_get,
+    load: factory_preset_load,
+    current: factory_preset_current,
+};
+
+fn preset_info(info: &mut FactoryPresetInfo, number: i32, name: &str) {
+    info.number = number;
+    info.name.fill(0);
+    let mut len = name.len().min(info.name.len() - 1);
+    while !name.is_char_boundary(len) { len -= 1; }
+    for (dst, src) in info.name.iter_mut().zip(name.as_bytes()[..len].iter()) { *dst = *src as c_char; }
+}
+
+unsafe extern "C" fn factory_preset_current(plugin: *const clap_plugin, info: *mut FactoryPresetInfo) -> bool {
+    let Some(proxy) = (unsafe { proxy_of(plugin) }) else { return false };
+    let Some(info) = (unsafe { info.as_mut() }) else { return false };
+    let state = unsafe { &*proxy.wrapper }.get_state_object();
+    let Some(meta) = state.fields.get(crate::state::FIELD_PRESET)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else { return false };
+    let Some(name) = meta["name"].as_str() else { return false };
+    let number = if meta["id"].as_str().is_some_and(|id| id.starts_with("factory:")) && meta["modified"] == false {
+        meta["number"].as_i64().unwrap_or(-1) as i32
+    } else { -1 };
+    preset_info(info, number, name);
+    true
+}
+
+unsafe extern "C" fn factory_preset_count(_plugin: *const clap_plugin) -> u32 {
+    crate::presets::factory_library().presets.len() as u32
+}
+
+unsafe extern "C" fn factory_preset_get(
+    _plugin: *const clap_plugin,
+    index: u32,
+    info: *mut FactoryPresetInfo,
+) -> bool {
+    let Some(preset) = crate::presets::factory_library().presets.get(index as usize) else { return false };
+    let Some(info) = (unsafe { info.as_mut() }) else { return false };
+    // Truncate only on a UTF-8 boundary and always terminate the C string.
+    preset_info(info, preset.preset.number as i32, &preset.preset.name);
+    true
+}
+
+unsafe extern "C" fn factory_preset_load(plugin: *const clap_plugin, number: i32) -> bool {
+    let Some(proxy) = (unsafe { proxy_of(plugin) }) else { return false };
+    let Some(preset) = crate::presets::factory_library().presets.iter().find(|p| p.preset.number as i32 == number)
+        else { return false };
+    // Keep instance preferences (language, scale, selected channel), replace the entire
+    // sound including wave RAM and macro routes through the same API as host recall.
+    let wrapper = unsafe { &*proxy.wrapper };
+    let mut state = wrapper.get_state_object();
+    state.params = pixl_core::PARAMS.iter().map(|p| {
+        (p.key.to_string(), crate::state::plain_to_param_value(p.id, preset.state.values.get(p.id)))
+    }).collect();
+    state.fields.insert(crate::state::FIELD_WAVE.into(), serde_json::to_string(&preset.state.wave).unwrap());
+    state.fields.insert(crate::state::FIELD_MACROS.into(), serde_json::to_string(&preset.state.macros).unwrap());
+    let meta = crate::state::PresetMetaRepr {
+        id: Some(preset.id.clone()), name: preset.preset.name.clone(), category: preset.preset.category,
+        number: preset.preset.number, modified: false,
+    };
+    state.fields.insert(crate::state::FIELD_PRESET.into(), serde_json::to_string(&meta).unwrap());
+    let loaded = wrapper.set_state_inner(&mut state);
+    if loaded { unsafe { notify_values_changed(proxy); } }
+    loaded
+}
 
 fn descriptor() -> &'static PluginDescriptor {
     static DESCRIPTOR: OnceLock<PluginDescriptor> = OnceLock::new();
@@ -131,6 +215,9 @@ struct PluginProxy {
     host: *const clap_host,
     /// A value rescan is due on the next `on_main_thread` call.
     rescan_pending: AtomicBool,
+    /// Keeps access to nih-plug's state API for native AU factory preset selection.
+    wrapper: *const Wrapper<Pixl>,
+    notifications: Arc<crate::host::HostNotifications>,
 }
 
 unsafe extern "C" fn create_plugin(
@@ -147,8 +234,11 @@ unsafe extern "C" fn create_plugin(
     }
     // The Arc is turned back into an owned value (and dropped) by nih-plug's `destroy`.
     let wrapper = Wrapper::<Pixl>::new(host);
+    let notifications = Arc::new(crate::host::HostNotifications::new(host));
+    (wrapper.task_executor.lock())(crate::host::PluginTask::AttachHost(notifications.clone()));
+    let wrapper = Arc::into_raw(wrapper);
     // SAFETY: the pointer comes from the leaked Arc above and stays valid until `destroy`.
-    let inner: *const clap_plugin = unsafe { (*Arc::into_raw(wrapper)).clap_plugin.as_ptr() };
+    let inner: *const clap_plugin = unsafe { (*wrapper).clap_plugin.as_ptr() };
     // SAFETY: `inner` points to nih-plug's fully initialized `clap_plugin`.
     let i = unsafe { &*inner };
     let proxy = Box::new(PluginProxy {
@@ -169,6 +259,8 @@ unsafe extern "C" fn create_plugin(
         inner,
         host,
         rescan_pending: AtomicBool::new(false),
+        wrapper,
+        notifications,
     });
     Box::into_raw(proxy) as *const clap_plugin
 }
@@ -190,6 +282,7 @@ unsafe extern "C" fn destroy(plugin: *const clap_plugin) {
     // SAFETY: `plugin` was created by `create_plugin` via `Box::into_raw`; the host destroys
     // each instance exactly once.
     let proxy = unsafe { Box::from_raw(plugin as *mut PluginProxy) };
+    proxy.notifications.detach();
     // SAFETY: `inner` is nih-plug's live plugin; its `destroy` releases the wrapper.
     unsafe {
         if let Some(destroy_inner) = (*proxy.inner).destroy {
@@ -207,6 +300,12 @@ unsafe extern "C" fn on_main_thread(plugin: *const clap_plugin) {
         }
         if let Some(f) = (*proxy.inner).on_main_thread {
             f(proxy.inner);
+        }
+        if proxy.notifications.take() {
+            if proxy.notifications.take_preset() { rescan_values(proxy.host); }
+            if let Some(mark_dirty) = host_extension::<clap_host_state>(proxy.host, CLAP_EXT_STATE).and_then(|s| s.mark_dirty) {
+                mark_dirty(proxy.host);
+            }
         }
     }
 }
@@ -329,6 +428,9 @@ unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char
                 Some(_) => &HARDENED_STATE as *const clap_plugin_state as *const c_void,
                 None => null(),
             };
+        }
+        if CStr::from_ptr(id) == c"audio.pixl.factory-presets/1" {
+            return &FACTORY_PRESETS as *const FactoryPresets as *const c_void;
         }
         if CStr::from_ptr(id) == CLAP_EXT_NOTE_PORTS {
             return match inner_note_ports(proxy.inner) {

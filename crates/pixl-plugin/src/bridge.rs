@@ -144,7 +144,12 @@ impl Bridge for PluginBridge {
 
     fn set_wave(&self, wave: WaveRam) {
         let shared = &self.params.shared;
-        self.loads().store_wave(shared, self.params.as_ref(), &wave::sanitize(&wave));
+        let wave = wave::sanitize(&wave);
+        let mut loads = self.loads();
+        if loads.view_wave(shared) == wave { return; }
+        loads.store_wave(shared, self.params.as_ref(), &wave);
+        drop(loads);
+        shared.notify_host();
     }
 
     fn macro_assignments(&self) -> MacroAssignments {
@@ -155,10 +160,13 @@ impl Bridge for PluginBridge {
         let shared = &self.params.shared;
         let mut loads = self.loads();
         let mut a = loads.view_macros(shared);
+        let before = a;
         let ok = a.set(macro_index, target, depth);
         if ok {
             loads.store_macros(shared, self.params.as_ref(), &a);
         }
+        drop(loads);
+        if ok && a != before { shared.notify_host(); }
         ok
     }
 
@@ -230,6 +238,10 @@ impl Bridge for PluginBridge {
 
     fn ui_state(&self) -> UiState {
         self.params.shared.ui_state()
+    }
+
+    fn state_generation(&self) -> u64 {
+        self.params.shared.restore_generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Stores everything except `scale`, which only changes through

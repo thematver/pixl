@@ -11,7 +11,8 @@
 //! seconds are evicted automatically, so labels that animate through many values do not grow
 //! the cache without bound.
 //!
-//! Characters missing from Geist are replaced by vector [`Icon`]s (see [`crate::icons`]).
+//! UI symbols missing from Geist are replaced by vector [`Icon`]s (see [`crate::icons`]).
+//! Other scripts in user content use platform font fallback, with Geist always preferred.
 
 use crate::fonts;
 use crate::icons::Icon;
@@ -23,7 +24,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::{BrushRef, Color, Fill, FontData};
 
@@ -612,22 +613,28 @@ impl std::fmt::Debug for TextSystem {
 }
 
 impl TextSystem {
-    /// Creates a text system with the embedded fonts registered (no system fonts).
+    /// Creates a text system with embedded Geist fonts and platform fallback.
     pub fn new() -> Self {
-        let mut fcx = FontContext {
-            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+        // CoreText discovery scans the installed font files. Keep that work process-wide,
+        // rather than repeating it every time a host opens another editor. Each view gets
+        // its own unshared query state; the explicit shaping stack still prefers Geist.
+        static COLLECTION: OnceLock<parley::fontique::Collection> = OnceLock::new();
+        let collection = COLLECTION.get_or_init(|| {
+            let mut collection = parley::fontique::Collection::new(parley::fontique::CollectionOptions {
                 shared: false,
-                system_fonts: false,
-            }),
-            source_cache: parley::fontique::SourceCache::default(),
-        };
-        for face in fonts::FACES {
-            let blob = parley::fontique::Blob::new(Arc::new(face.data));
-            let registered = fcx.collection.register_fonts(blob, None);
-            if registered.is_empty() {
-                log::error!("pixl-gfx: failed to register embedded font {}", face.file);
+                system_fonts: true,
+            });
+            for face in fonts::FACES {
+                let blob = parley::fontique::Blob::new(Arc::new(face.data));
+                let registered = collection.register_fonts(blob, None);
+                if registered.is_empty() {
+                    log::error!("pixl-gfx: failed to register embedded font {}", face.file);
+                }
             }
-        }
+            collection
+        });
+        let fcx =
+            FontContext { collection: collection.clone(), source_cache: parley::fontique::SourceCache::default() };
         Self { fcx, lcx: LayoutContext::new(), cache: HashMap::new(), entries: 0, frame: 0, hits: 0, misses: 0 }
     }
 
@@ -987,6 +994,52 @@ mod tests {
         let b = t.measure("WWWW", &s).width;
         let c = t.measure("ЖЖЖЖ", &s).width;
         assert!((a - b).abs() < 0.01 && (a - c).abs() < 0.01, "{a} {b} {c}");
+    }
+
+    #[test]
+    fn embedded_geist_remains_first_for_supported_text() {
+        let mut t = sys();
+        for style in [TextStyle::sans(13.0).weight(600.0), TextStyle::mono(10.0).weight(500.0)] {
+            let layout = t.layout("PIXL · Яркий лид 014", &style);
+            assert!(!layout.runs.is_empty());
+            let face = fonts::FACES
+                .iter()
+                .find(|face| face.family == style.family && f32::from(face.weight) == style.weight)
+                .unwrap();
+            assert!(
+                layout.runs.iter().all(|run| run.font.data.data() == face.data),
+                "system font replaced embedded Geist"
+            );
+            assert!(layout.runs.iter().flat_map(|run| &run.glyphs).all(|glyph| glyph.id != 0));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cjk_user_preset_names_have_real_fallback_glyphs() {
+        let mut t = sys();
+        // Han, Katakana and Hangul are absent from embedded Geist. macOS supplies fonts
+        // for each script; checking glyph IDs catches tofu even when layout width is valid.
+        for name in ["夜空の音色", "シンセ", "한글"] {
+            assert!(name.chars().any(|ch| !fonts::has_glyph(FontFamily::Sans, ch)));
+            for style in [TextStyle::sans(13.0).weight(600.0), TextStyle::mono(10.0)] {
+                let layout = t.layout(name, &style);
+                let glyphs: Vec<_> = layout.runs.iter().flat_map(|run| &run.glyphs).collect();
+                assert!(!glyphs.is_empty(), "no glyphs for {name}");
+                assert!(glyphs.iter().all(|glyph| glyph.id != 0), "missing fallback glyph in {name}");
+                assert!(!layout.is_truncated());
+                assert!(
+                    layout.runs.iter().any(|run| !fonts::FACES.iter().any(|face| run.font.data.data() == face.data)),
+                    "no system fallback used for {name}"
+                );
+            }
+        }
+        let mixed = "PIXL 夜空 シンセ 한글";
+        let layout = t.layout(mixed, &TextStyle::sans(13.0));
+        assert!(layout.runs.iter().flat_map(|run| &run.glyphs).all(|glyph| glyph.id != 0));
+        let caret = layout.caret_rect(mixed.len());
+        assert!((caret.x0 - layout.width()).abs() < 0.05);
+        assert_eq!(layout.hit_test(Point::new(caret.x0 + 1.0, caret.center().y)), mixed.len());
     }
 
     #[test]

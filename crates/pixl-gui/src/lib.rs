@@ -1,7 +1,12 @@
 //! PIXL's native Bridge-driven editor and deterministic standalone test harness.
+mod history;
+mod wave_edit;
+pub use wave_edit::WaveEdit;
 mod editor;
 mod mock;
 mod paint;
+mod curves;
+mod plots;
 pub use editor::{EditorApp, BrowserState, Control, Action};
 pub use mock::{MockBridge, EditEvent};
 use pixl_core::Bridge;

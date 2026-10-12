@@ -38,6 +38,26 @@ FetchContent_Declare(clap-wrapper
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(clap-wrapper)
 
+# Apply the small, versioned PIXL AU bridge on every clean checkout. Accept an
+# already-applied patch on reconfigure; fail on upstream drift instead of silently
+# producing a plugin without native presets.
+find_package(Git REQUIRED)
+set(PIXL_AU_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/logic-presets.patch")
+execute_process(COMMAND "${GIT_EXECUTABLE}" apply --check "${PIXL_AU_PATCH}"
+    WORKING_DIRECTORY "${clap-wrapper_SOURCE_DIR}" RESULT_VARIABLE patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+if(patch_check EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${PIXL_AU_PATCH}"
+        WORKING_DIRECTORY "${clap-wrapper_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+else()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${PIXL_AU_PATCH}"
+        WORKING_DIRECTORY "${clap-wrapper_SOURCE_DIR}" RESULT_VARIABLE patch_applied
+        OUTPUT_QUIET ERROR_QUIET)
+    if(NOT patch_applied EQUAL 0)
+        message(FATAL_ERROR "PIXL Logic patch does not match clap-wrapper; review patches/logic-presets.patch")
+    endif()
+endif()
+
 add_library(pixl-rust STATIC IMPORTED GLOBAL)
 set_target_properties(pixl-rust PROPERTIES IMPORTED_LOCATION "${PIXL_RUST_LIB}")
 
@@ -56,6 +76,7 @@ target_link_libraries(pixl-impl INTERFACE
     "-framework SystemConfiguration"
     "-liconv"
     "-lobjc")
+target_include_directories(pixl-impl INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 make_clapfirst_plugins(
     TARGET_NAME PIXL

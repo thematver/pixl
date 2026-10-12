@@ -6,7 +6,7 @@ use std::sync::Mutex;
 pub enum EditEvent { Begin(ParamId), Set(ParamId, f32), End(ParamId), Wave(WaveRam), Resize(f32) }
 struct State {
     sound: PresetState, ui: UiState, presets: Vec<(PresetInfo, PresetState)>,
-    current: CurrentPreset, events: Vec<EditEvent>, telemetry: TelemetrySnapshot,
+    generation: u64, current: CurrentPreset, events: Vec<EditEvent>, telemetry: TelemetrySnapshot,
 }
 /// Thread-safe in-memory Bridge, using the real factory library and preset states.
 pub struct MockBridge { state: Mutex<State> }
@@ -22,8 +22,10 @@ impl MockBridge {
         let initial = presets.iter().find(|(p,_)| p.number == 14).unwrap_or(&presets[0]);
         let sound = initial.1.clone();
         let current = CurrentPreset { id:Some(initial.0.id.clone()), name:initial.0.name.clone(), category:initial.0.category, number:initial.0.number, modified:false };
-        Self { state:Mutex::new(State { sound, ui:UiState::default(), presets, current, events:Vec::new(), telemetry:TelemetrySnapshot::default() }) }
+        Self { state:Mutex::new(State { generation:0, sound, ui:UiState::default(), presets, current, events:Vec::new(), telemetry:TelemetrySnapshot::default() }) }
     }
+    #[cfg(test)]
+    pub(crate) fn host_recall(&self, ui: UiState) { let mut s=self.state.lock().unwrap();s.ui=ui;s.generation+=1; }
     pub fn events(&self) -> Vec<EditEvent> { self.state.lock().unwrap().events.clone() }
     pub fn clear_events(&self) { self.state.lock().unwrap().events.clear(); }
     pub fn set_telemetry(&self, telemetry: TelemetrySnapshot) { self.state.lock().unwrap().telemetry = telemetry; }
@@ -63,6 +65,7 @@ impl Bridge for MockBridge {
     fn delete_user_preset(&self,id:&str)->Result<(),String> { let mut s=self.state.lock().unwrap(); let i=s.presets.iter().position(|(p,_)|p.id==id).ok_or("Preset not found")?; if s.presets[i].0.is_factory {return Err("Factory presets are read-only".into());} s.presets.remove(i); if s.current.id.as_deref()==Some(id) {s.current.id=None;s.current.modified=true;} Ok(()) }
     fn set_favorite(&self,id:&str,favorite:bool) {if let Some((p,_))=self.state.lock().unwrap().presets.iter_mut().find(|(p,_)|p.id==id){p.favorite=favorite;} }
     fn telemetry(&self)->TelemetrySnapshot {self.state.lock().unwrap().telemetry}
+    fn state_generation(&self)->u64 {self.state.lock().unwrap().generation}
     fn ui_state(&self)->UiState {self.state.lock().unwrap().ui.clone()}
     fn set_ui_state(&self,ui:UiState) {self.state.lock().unwrap().ui=ui;}
     fn request_resize(&self,scale:f32)->bool {let mut s=self.state.lock().unwrap(); if !(0.75..=2.0).contains(&scale){return false;} s.ui.scale=scale;s.events.push(EditEvent::Resize(scale));true}

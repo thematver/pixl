@@ -13,7 +13,7 @@ png = ["dep:png"]
 
 [dependencies]
 vello = "0.11"
-parley = { version = "0.12", default-features = false, features = ["std"] }
+parley = { version = "0.12", default-features = false, features = ["std", "system"] }
 skrifa = "0.44"
 pollster = "0.4"
 log = "0.4"
