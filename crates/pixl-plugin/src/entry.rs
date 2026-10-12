@@ -40,7 +40,7 @@ use clap_sys::ext::note_ports::{
     clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_MIDI,
 };
 use clap_sys::ext::params::{clap_host_params, CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES};
-use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::state::{clap_host_state, clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::ext::thread_check::{clap_host_thread_check, CLAP_EXT_THREAD_CHECK};
 use clap_sys::stream::{clap_istream, clap_ostream};
 use nih_plug::wrapper::clap::{
@@ -198,6 +198,7 @@ struct PluginProxy {
     rescan_pending: AtomicBool,
     /// Keeps access to nih-plug's state API for native AU factory preset selection.
     wrapper: *const Wrapper<Pixl>,
+    notifications: Arc<crate::host::HostNotifications>,
 }
 
 unsafe extern "C" fn create_plugin(
@@ -213,7 +214,10 @@ unsafe extern "C" fn create_plugin(
         return null();
     }
     // The Arc is turned back into an owned value (and dropped) by nih-plug's `destroy`.
-    let wrapper = Arc::into_raw(Wrapper::<Pixl>::new(host));
+    let wrapper = Wrapper::<Pixl>::new(host);
+    let notifications = Arc::new(crate::host::HostNotifications::new(host));
+    (wrapper.task_executor.lock())(crate::host::PluginTask::AttachHost(notifications.clone()));
+    let wrapper = Arc::into_raw(wrapper);
     // SAFETY: the pointer comes from the leaked Arc above and stays valid until `destroy`.
     let inner: *const clap_plugin = unsafe { (*wrapper).clap_plugin.as_ptr() };
     // SAFETY: `inner` points to nih-plug's fully initialized `clap_plugin`.
@@ -237,6 +241,7 @@ unsafe extern "C" fn create_plugin(
         host,
         rescan_pending: AtomicBool::new(false),
         wrapper,
+        notifications,
     });
     Box::into_raw(proxy) as *const clap_plugin
 }
@@ -258,6 +263,7 @@ unsafe extern "C" fn destroy(plugin: *const clap_plugin) {
     // SAFETY: `plugin` was created by `create_plugin` via `Box::into_raw`; the host destroys
     // each instance exactly once.
     let proxy = unsafe { Box::from_raw(plugin as *mut PluginProxy) };
+    proxy.notifications.detach();
     // SAFETY: `inner` is nih-plug's live plugin; its `destroy` releases the wrapper.
     unsafe {
         if let Some(destroy_inner) = (*proxy.inner).destroy {
@@ -275,6 +281,11 @@ unsafe extern "C" fn on_main_thread(plugin: *const clap_plugin) {
         }
         if let Some(f) = (*proxy.inner).on_main_thread {
             f(proxy.inner);
+        }
+        if proxy.notifications.take() {
+            if let Some(mark_dirty) = host_extension::<clap_host_state>(proxy.host, CLAP_EXT_STATE).and_then(|s| s.mark_dirty) {
+                mark_dirty(proxy.host);
+            }
         }
     }
 }

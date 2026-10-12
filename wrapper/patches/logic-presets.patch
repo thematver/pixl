@@ -1,5 +1,5 @@
 diff --git a/src/detail/auv2/auv2_base_classes.h b/src/detail/auv2/auv2_base_classes.h
-index 2db27a8..bd949fd 100644
+index 2db27a8..2b7580a 100644
 --- a/src/detail/auv2/auv2_base_classes.h
 +++ b/src/detail/auv2/auv2_base_classes.h
 @@ -558,6 +558,9 @@ class WrapAsAUV2 : public ausdk::AUBase,
@@ -12,6 +12,14 @@ index 2db27a8..bd949fd 100644
    OSStatus SaveState(CFPropertyListRef *ptPList) override;
    OSStatus RestoreState(CFPropertyListRef plist) override;
  
+@@ -580,6 +583,7 @@ class WrapAsAUV2 : public ausdk::AUBase,
+   // ---------------- Clap::IHost
+   void mark_dirty() override
+   {
++    PropertyChanged(kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0);
+   }
+   void restartPlugin() override
+   {
 diff --git a/src/wrapasauv2.cpp b/src/wrapasauv2.cpp
 index ca783d1..5947ed9 100644
 --- a/src/wrapasauv2.cpp

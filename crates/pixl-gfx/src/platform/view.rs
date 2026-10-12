@@ -388,6 +388,10 @@ impl PixlView {
         handled
     }
     fn apply(&self, effects: Effects, cursor: Cursor) {
+        if effects.haptic {
+            use objc2_app_kit::{NSHapticFeedbackPerformer, NSHapticFeedbackManager, NSHapticFeedbackPattern, NSHapticFeedbackPerformanceTime};
+            NSHapticFeedbackManager::defaultPerformer().performFeedbackPattern_performanceTime(NSHapticFeedbackPattern::Alignment, NSHapticFeedbackPerformanceTime::Now);
+        }
         if let Some(rect) = effects.text_input_area {
             if let Some(s) = self.ivars().state.borrow_mut().as_mut() {
                 s.caret = rect;

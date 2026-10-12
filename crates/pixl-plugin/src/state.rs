@@ -34,6 +34,7 @@ use pixl_core::{Category, MacroAssignments, ParamId, ParamKind, ParamValues, UiS
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Weak;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Persistent field key: wave RAM.
 pub const FIELD_WAVE: &str = "wave";
@@ -59,6 +60,9 @@ pub const MAX_UI_SCALE: f32 = 2.0;
 /// (editor calls and host state save/load), so they use short `Mutex` critical sections that
 /// never contain I/O and are never taken on the audio thread.
 pub struct SharedState {
+    /// Host recall generation: invalidates editor drag/history even for the same preset.
+    pub(crate) restore_generation: AtomicU64,
+    pub(crate) host_notifications: Mutex<Option<std::sync::Arc<crate::host::HostNotifications>>>,
     /// Wave RAM (GUI writes, audio reads by version).
     pub wave: AtomicWave,
     /// Macro routings (GUI writes, audio reads by version).
@@ -84,6 +88,8 @@ impl SharedState {
     pub fn new() -> Self {
         let meta = init_meta();
         Self {
+            restore_generation: AtomicU64::new(0),
+            host_notifications: Mutex::new(None),
             wave: AtomicWave::new(wave::default_wave()),
             macros: AtomicMacros::new(&MacroAssignments::factory_default()),
             telemetry: AtomicTelemetry::default(),
@@ -98,6 +104,10 @@ impl SharedState {
     /// Current UI state (copy).
     pub fn ui_state(&self) -> UiState {
         self.ui.lock().clone()
+    }
+
+    pub(crate) fn notify_host(&self) {
+        if let Some(host) = self.host_notifications.lock().as_ref() { host.changed(); }
     }
 
     /// Current UI scale, sanitized.
@@ -240,6 +250,7 @@ pub fn deserialize_fields(params: &PixlParams, fields: &BTreeMap<String, String>
     let context = shared.editor.lock().as_ref().and_then(Weak::upgrade);
     let sink = context.as_deref().map(|context| ContextSink { context, params });
     shared.loads.lock().cancel(shared, params, sink.as_ref().map(|s| s as &dyn ParamSink));
+    shared.restore_generation.fetch_add(1, Ordering::Release);
 }
 
 impl PresetMeta {

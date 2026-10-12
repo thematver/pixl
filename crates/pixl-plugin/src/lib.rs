@@ -24,6 +24,8 @@ pub mod bridge;
 pub mod editor;
 mod entry;
 pub mod handover;
+mod host;
+pub use host::PluginTask;
 pub mod midi;
 pub mod params;
 pub mod presets;
@@ -127,7 +129,14 @@ impl Plugin for Pixl {
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
-    type BackgroundTask = ();
+    type BackgroundTask = PluginTask;
+
+    fn task_executor(&mut self) -> TaskExecutor<Self> {
+        let params = self.params.clone();
+        Box::new(move |PluginTask::AttachHost(notifications)| {
+            *params.shared.host_notifications.lock() = Some(notifications);
+        })
+    }
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()

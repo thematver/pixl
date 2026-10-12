@@ -1,4 +1,5 @@
 //! PIXL's native Bridge-driven editor and deterministic standalone test harness.
+mod history;
 mod editor;
 mod mock;
 mod paint;

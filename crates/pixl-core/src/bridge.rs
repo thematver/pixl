@@ -245,6 +245,8 @@ pub trait Bridge: Send + Sync {
     // ----- Editor state -----
 
     fn ui_state(&self) -> UiState;
+    /// Changes after host recall, including Compare/Paste of the same preset.
+    fn state_generation(&self) -> u64 { 0 }
     fn set_ui_state(&self, state: UiState);
     /// Ask the host to resize the editor to `scale` × design size. Returns whether the host
     /// accepted.
