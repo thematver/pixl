@@ -4,51 +4,44 @@
 //!   host records automation and undo exactly like for its own controls.
 //! - Wave RAM and macro routings are written to the lock-free containers the audio thread
 //!   reads by version.
-//! - Presets are loaded with [`GuiContext::set_state`], so the host gets a parameter rescan
-//!   (and the load is undoable / recorded where the host supports it). The state contains
-//!   every parameter, the wave, the macros, the preset metadata and the *current* UI state.
+//! - Presets are loaded without `GuiContext::set_state` (which blocks the calling thread until
+//!   the next render while the plugin processes — always, in AUv2 — and restores the state on
+//!   the audio thread): every changed parameter is sent as an ordinary gesture, and the audio
+//!   thread switches parameters, wave RAM and macros together at one block boundary. See
+//!   [`crate::handover`]. No call blocks, no thread is started, and nothing outlives the
+//!   editor.
+//! - Everything the editor reads is its *view*: a preset it asked to load shows at once, even
+//!   while the host has not processed it yet; the persistent state only changes once the host
+//!   has applied it (so a project saved meanwhile stays self-consistent).
 //! - `modified` is computed by comparing against the preset's baseline (see
 //!   [`crate::state`]).
-//!
-//! ## Why preset loads may be applied asynchronously
-//!
-//! While the host has the plugin in its processing state, nih-plug applies a GUI-initiated
-//! `set_state` at the end of the next `process()` call and blocks the calling thread until
-//! then. Hosts may stop calling `process()` without leaving that state (Logic Pro does this
-//! for idle, non-live tracks), which would freeze the host's main thread. The bridge
-//! therefore calls `set_state` directly only when that is guaranteed to return promptly
-//! (plugin inactive, or audio ran within the last [`AUDIO_ALIVE_WINDOW_MS`]); otherwise it
-//! hands the state to a small loader thread that applies it as soon as the host processes
-//! again. Until then the header already shows the new preset.
 
+use crate::handover::{ContextSink, EditorLoads};
 use crate::params::PixlParams;
-use crate::presets::PresetStore;
-use crate::state::{self, current_state, plugin_state_for_preset, PresetMetaRepr};
-use nih_plug::prelude::{GuiContext, PluginState};
-use parking_lot::Mutex;
+use crate::presets::{PresetMeta, PresetStore};
+use crate::state;
+use nih_plug::prelude::GuiContext;
+use parking_lot::MutexGuard;
 use pixl_core::bridge::CurrentPreset;
 use pixl_core::wave;
 use pixl_core::{
     Bridge, Category, MacroAssignments, ParamId, PresetId, PresetInfo, TelemetrySnapshot, UiState, WaveRam, MACRO_COUNT,
 };
-use std::sync::mpsc;
 use std::sync::Arc;
-
-/// Audio counts as running if `process()` was called within this many milliseconds.
-pub const AUDIO_ALIVE_WINDOW_MS: u64 = 250;
 
 /// The editor's view of the plugin.
 pub struct PluginBridge {
     context: Arc<dyn GuiContext>,
     params: Arc<PixlParams>,
     store: Arc<PresetStore>,
-    loader: Mutex<Option<mpsc::Sender<PluginState>>>,
 }
 
 impl PluginBridge {
-    /// Create a bridge for an open editor.
+    /// Create a bridge for an open editor. The instance keeps a weak reference to `context`
+    /// while the bridge lives (for host state loads that override editor changes in flight).
     pub fn new(context: Arc<dyn GuiContext>, params: Arc<PixlParams>, store: Arc<PresetStore>) -> Self {
-        Self { context, params, store, loader: Mutex::new(None) }
+        *params.shared.editor.lock() = Some(Arc::downgrade(&context));
+        Self { context, params, store }
     }
 
     /// The parameters this bridge edits.
@@ -65,58 +58,34 @@ impl PluginBridge {
         self.params.shared.ui.lock().lang
     }
 
-    /// Apply a full plugin state through the wrapper (see the module docs for the timing).
-    fn apply_state(&self, state: PluginState) {
-        let runtime = &self.params.shared.runtime;
-        if !runtime.is_active() || runtime.processed_within(AUDIO_ALIVE_WINDOW_MS) {
-            self.context.set_state(state);
-            return;
-        }
-        let mut loader = self.loader.lock();
-        let state = match loader.as_ref() {
-            Some(tx) => match tx.send(state) {
-                Ok(()) => return,
-                Err(mpsc::SendError(state)) => state,
-            },
-            None => state,
-        };
-        // (Re)start the loader thread.
-        let (tx, rx) = mpsc::channel::<PluginState>();
-        let context = self.context.clone();
-        let spawned = std::thread::Builder::new().name("PIXL preset loader".into()).spawn(move || {
-            while let Ok(mut state) = rx.recv() {
-                // Coalesce: only the most recent request matters.
-                while let Ok(newer) = rx.try_recv() {
-                    state = newer;
-                }
-                context.set_state(state);
-            }
-        });
-        match spawned {
-            Ok(_) => {
-                if let Err(mpsc::SendError(state)) = tx.send(state) {
-                    self.context.set_state(state);
-                } else {
-                    *loader = Some(tx);
-                }
-            }
-            // No thread available: fall back to the synchronous path.
-            Err(_) => {
-                drop(loader);
-                self.context.set_state(state);
-            }
-        }
+    fn loads(&self) -> MutexGuard<'_, EditorLoads> {
+        self.params.shared.loads.lock()
+    }
+
+    fn sink(&self) -> ContextSink<'_> {
+        ContextSink { context: self.context.as_ref(), params: &self.params }
     }
 
     /// Effective value of `id` given base values and macro routings (same math as
     /// [`pixl_core::apply_macros`], evaluated for a single parameter).
     fn modulated_value(&self, id: ParamId) -> f32 {
-        let base = self.params.value(id);
-        let assignments = self.params.shared.macros.load();
+        let shared = &self.params.shared;
+        let loads = self.loads();
+        // While nothing is in flight the host's values include its own modulation (CLAP).
+        let settled = loads.is_settled();
+        let value = |p: ParamId| {
+            if settled {
+                self.params.value(p)
+            } else {
+                loads.view_value(shared, self.params.as_ref(), p)
+            }
+        };
+        let base = value(id);
+        let assignments = loads.view_macros(shared);
         let mut offset = 0.0f32;
         let mut touched = false;
         for m in 0..MACRO_COUNT {
-            let mv = self.params.value(ParamId::macro_value(m)) / 100.0;
+            let mv = value(ParamId::macro_value(m)) / 100.0;
             if !mv.is_finite() || mv == 0.0 {
                 continue;
             }
@@ -133,9 +102,22 @@ impl PluginBridge {
     }
 }
 
+impl Drop for PluginBridge {
+    /// The editor closes: end open gestures, send what still waits, and forget the context.
+    fn drop(&mut self) {
+        let shared = &self.params.shared;
+        shared.loads.lock().close(shared, self.params.as_ref(), &self.sink());
+        let mut editor = shared.editor.lock();
+        let ours = editor.as_ref().is_some_and(|w| std::ptr::addr_eq(w.as_ptr(), Arc::as_ptr(&self.context)));
+        if ours {
+            *editor = None;
+        }
+    }
+}
+
 impl Bridge for PluginBridge {
     fn param(&self, id: ParamId) -> f32 {
-        self.params.base_value(id)
+        self.loads().view_value(&self.params.shared, self.params.as_ref(), id)
     }
 
     fn param_modulated(&self, id: ParamId) -> f32 {
@@ -143,46 +125,39 @@ impl Bridge for PluginBridge {
     }
 
     fn begin_edit(&self, id: ParamId) {
-        // SAFETY: the pointer belongs to `self.params`, which outlives this call.
-        unsafe { self.context.raw_begin_set_parameter(self.params.ptr(id)) };
+        let shared = &self.params.shared;
+        self.loads().begin_edit(shared, self.params.as_ref(), &self.sink(), id);
     }
 
     fn set_param(&self, id: ParamId, plain: f32) {
-        let plain = id.sanitize(plain);
-        let ptr = self.params.ptr(id);
-        // SAFETY: as above. `preview_normalized` matches the table's normalization.
-        unsafe {
-            let normalized = ptr.preview_normalized(plain);
-            self.context.raw_set_parameter_normalized(ptr, normalized);
-        }
+        self.loads().set_param(&self.params.shared, &self.sink(), id, plain);
     }
 
     fn end_edit(&self, id: ParamId) {
-        // SAFETY: as above.
-        unsafe { self.context.raw_end_set_parameter(self.params.ptr(id)) };
+        let shared = &self.params.shared;
+        self.loads().end_edit(shared, self.params.as_ref(), &self.sink(), id);
     }
 
     fn wave(&self) -> WaveRam {
-        self.params.shared.wave.load()
+        self.loads().view_wave(&self.params.shared)
     }
 
     fn set_wave(&self, wave: WaveRam) {
-        self.params.shared.wave.store(&wave::sanitize(&wave));
+        let shared = &self.params.shared;
+        self.loads().store_wave(shared, self.params.as_ref(), &wave::sanitize(&wave));
     }
 
     fn macro_assignments(&self) -> MacroAssignments {
-        let mut a = self.params.shared.macros.load();
-        a.sanitize();
-        a
+        self.loads().view_macros(&self.params.shared)
     }
 
     fn set_macro_assignment(&self, macro_index: usize, target: ParamId, depth: f32) -> bool {
-        let _guard = self.params.shared.macro_edit.lock();
-        let mut a = self.params.shared.macros.load();
-        a.sanitize();
+        let shared = &self.params.shared;
+        let mut loads = self.loads();
+        let mut a = loads.view_macros(shared);
         let ok = a.set(macro_index, target, depth);
         if ok {
-            self.params.shared.macros.store(&a);
+            loads.store_macros(shared, self.params.as_ref(), &a);
         }
         ok
     }
@@ -191,53 +166,52 @@ impl Bridge for PluginBridge {
         self.store.list()
     }
 
+    /// Also drives the preset handover (the header asks every frame).
     fn current_preset(&self) -> CurrentPreset {
+        let shared = &self.params.shared;
+        self.loads().pump(shared, self.params.as_ref(), &self.sink());
         state::current_preset(&self.params)
     }
 
     fn load_preset(&self, id: &str) -> Result<(), String> {
         let resolved = self.store.resolve(id).map_err(|e| e.message(self.lang()))?;
-        let meta = PresetMetaRepr {
-            id: Some(resolved.id.clone()),
-            name: resolved.name.clone(),
-            category: resolved.category,
-            number: resolved.number,
-            modified: false,
-        };
-        let ui = self.params.shared.ui_state();
-        let plugin_state = plugin_state_for_preset(&resolved.state, &meta, &ui);
-        *self.params.shared.pending_preset.lock() = Some(CurrentPreset {
+        let meta = PresetMeta {
             id: Some(resolved.id),
             name: resolved.name,
             category: resolved.category,
             number: resolved.number,
-            modified: false,
-        });
-        self.apply_state(plugin_state);
+            baseline: Some(resolved.state.clone()),
+            modified_fallback: false,
+        };
+        let shared = &self.params.shared;
+        self.loads().request(shared, self.params.as_ref(), &self.sink(), resolved.state, meta);
         Ok(())
     }
 
     fn save_user_preset(&self, name: &str, category: Category) -> Result<PresetId, String> {
-        let current = current_state(&self.params);
+        let shared = &self.params.shared;
+        let current = self.loads().view_state(shared, self.params.as_ref());
         let saved = self.store.save_user(name, category, &current).map_err(|e| e.message(self.lang()))?;
-        *self.params.shared.pending_preset.lock() = None;
-        let mut meta = self.params.shared.preset.lock();
-        meta.id = Some(saved.id.clone());
-        meta.name = saved.name;
-        meta.category = saved.category;
-        meta.number = 0;
-        meta.baseline = Some(saved.state);
-        meta.modified_fallback = false;
-        Ok(saved.id)
+        let id = saved.id.clone();
+        self.loads().edit_meta(shared, false, |meta| {
+            meta.id = Some(saved.id.clone());
+            meta.name = saved.name.clone();
+            meta.category = saved.category;
+            meta.number = 0;
+            meta.baseline = Some(saved.state.clone());
+            meta.modified_fallback = false;
+        });
+        Ok(id)
     }
 
     fn delete_user_preset(&self, id: &str) -> Result<(), String> {
         self.store.delete_user(id).map_err(|e| e.message(self.lang()))?;
-        let mut meta = self.params.shared.preset.lock();
-        if meta.id.as_deref() == Some(id) {
-            // The sound stays; it just no longer has a stored preset behind it.
-            meta.id = None;
-        }
+        self.loads().edit_meta(&self.params.shared, true, |meta| {
+            if meta.id.as_deref() == Some(id) {
+                // The sound stays; it just no longer has a stored preset behind it.
+                meta.id = None;
+            }
+        });
         Ok(())
     }
 
@@ -247,8 +221,11 @@ impl Bridge for PluginBridge {
         }
     }
 
+    /// Also drives the preset handover (the editor asks for telemetry every frame).
     fn telemetry(&self) -> TelemetrySnapshot {
-        self.params.shared.telemetry.load()
+        let shared = &self.params.shared;
+        self.loads().pump(shared, self.params.as_ref(), &self.sink());
+        shared.telemetry.load()
     }
 
     fn ui_state(&self) -> UiState {
@@ -288,33 +265,31 @@ impl Bridge for PluginBridge {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::presets::factory_library;
     use crate::presets::tests::TempDir;
-    use crate::presets::{factory_library, init_state};
-    use crate::state::{values_from_plugin_state, FIELD_UI};
-    use nih_plug::prelude::{ParamPtr, Params, PluginApi};
+    use nih_plug::prelude::{ParamPtr, Params, PluginApi, PluginState};
+    use parking_lot::Mutex;
     use pixl_core::{Channel, Lang};
 
-    /// Records everything the bridge asks of the wrapper. `set_state` emulates the wrapper's
-    /// field restore (parameter values cannot be set from outside nih-plug, so they are
-    /// checked on the recorded state instead).
+    /// Records everything the bridge asks of the wrapper. nih-plug's parameter values cannot be
+    /// set from outside the wrapper, so tests check the recorded gestures and the editor's view.
     pub(crate) struct MockContext {
         pub(crate) params: Arc<PixlParams>,
         pub(crate) calls: Mutex<Vec<String>>,
-        pub(crate) states: Mutex<Vec<PluginState>>,
+        /// `set_state` / `get_state` calls (the bridge must never make them).
+        pub(crate) state_calls: Mutex<usize>,
         pub(crate) accept_resize: bool,
     }
 
     impl MockContext {
         pub(crate) fn new(params: Arc<PixlParams>) -> Arc<Self> {
-            Arc::new(Self {
-                params,
-                calls: Mutex::new(Vec::new()),
-                states: Mutex::new(Vec::new()),
-                accept_resize: true,
-            })
+            Arc::new(Self { params, calls: Mutex::new(Vec::new()), state_calls: Mutex::new(0), accept_resize: true })
         }
         fn key(&self, ptr: ParamPtr) -> String {
             self.params.param_map().into_iter().find(|(_, p, _)| *p == ptr).map(|(k, _, _)| k).unwrap_or_default()
+        }
+        fn gestures(&self) -> Vec<String> {
+            self.calls.lock().iter().filter(|c| !c.starts_with("resize")).cloned().collect()
         }
     }
 
@@ -339,12 +314,13 @@ pub(crate) mod tests {
             self.calls.lock().push(format!("end {k}"));
         }
         fn get_state(&self) -> PluginState {
+            *self.state_calls.lock() += 1;
             PluginState { version: String::new(), params: Default::default(), fields: self.params.serialize_fields() }
         }
-        fn set_state(&self, mut state: PluginState) {
-            crate::state::filter_state(&mut state);
-            self.params.deserialize_fields(&state.fields);
-            self.states.lock().push(state);
+        fn set_state(&self, _state: PluginState) {
+            // nih-plug blocks here until the next render while the plugin processes (always in
+            // AUv2) and restores the state on the audio thread: the bridge must never call it.
+            *self.state_calls.lock() += 1;
         }
     }
 
@@ -382,6 +358,9 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(b.param(ParamId::GlideTime), 90.0);
+        // The editor sees its own changes before the host has applied them.
+        assert_eq!(b.param(ParamId::SweepAmt), 48.0);
+        assert_eq!(b.param(ParamId::Chip), 2.0);
     }
 
     #[test]
@@ -400,6 +379,9 @@ pub(crate) mod tests {
         for id in ParamId::ALL {
             assert!((b.param_modulated(*id) - out.get(*id)).abs() < 1e-4, "{}", id.key());
         }
+        // An edit in flight is part of the modulated view too.
+        b.set_param_once(ParamId::Macro4, 100.0);
+        assert!((b.param_modulated(ParamId::EchoMix) - 75.0).abs() < 1e-3);
     }
 
     #[test]
@@ -427,7 +409,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn loading_a_factory_preset_sets_complete_state_and_keeps_the_ui() {
+    fn loading_a_factory_preset_sends_gestures_and_keeps_the_ui() {
+        // PLG-02/03 (SPEC §0, §8): no `set_state`, so nothing blocks and no state restore runs
+        // on the audio thread; every changed parameter reaches the host as a gesture.
         let tmp = TempDir::new("bridge-load");
         let (b, ctx, params) = bridge(&tmp);
         params.shared.ui.lock().channel = Channel::Noise;
@@ -438,20 +422,40 @@ pub(crate) mod tests {
         let lib = factory_library();
         let target = lib.presets.last().expect("factory library is not empty");
         b.load_preset(&target.id).unwrap();
-        let states = ctx.states.lock();
-        assert_eq!(states.len(), 1, "inactive plugin: applied synchronously");
-        let s = &states[0];
-        assert_eq!(values_from_plugin_state(s), target.state.values);
-        assert_eq!(s.params.len(), pixl_core::PARAM_COUNT);
-        assert_eq!(params.shared.wave.load(), target.state.wave);
+        assert_eq!(*ctx.state_calls.lock(), 0, "GuiContext::set_state is never used");
+        // Every parameter that differs was sent as a complete gesture, nothing else.
+        let calls = ctx.gestures();
+        let defaults = pixl_core::ParamValues::defaults();
+        let differs = |s: &pixl_core::ParamSpec| {
+            let d = (target.state.values.get(s.id) - defaults.get(s.id)).abs();
+            match s.kind {
+                pixl_core::ParamKind::Float { min, max, .. } => d > 1e-5 * (max - min).abs().max(1.0),
+                _ => d >= 0.5,
+            }
+        };
+        let changed: Vec<&str> = pixl_core::PARAMS.iter().filter(|s| differs(s)).map(|s| s.key).collect();
+        assert_eq!(calls.len(), 3 * changed.len());
+        for (k, key) in changed.iter().enumerate() {
+            assert_eq!(calls[3 * k], format!("begin {key}"));
+            assert!(calls[3 * k + 1].starts_with(&format!("set {key} ")));
+            assert_eq!(calls[3 * k + 2], format!("end {key}"));
+        }
+        // The editor shows the new preset at once, the UI layout stays.
+        for id in ParamId::ALL {
+            assert!((b.param(*id) - target.state.values.get(*id)).abs() < 1e-4, "{}", id.key());
+        }
+        assert_eq!(b.wave(), target.state.wave);
         assert_eq!(params.shared.ui_state().channel, Channel::Noise);
         assert_eq!(params.shared.ui_state().scale, 1.5);
-        assert!(s.fields[FIELD_UI].contains("Noise"));
         let header = b.current_preset();
         assert_eq!(header.id.as_deref(), Some(target.id.as_str()));
         assert_eq!(header.name, target.preset.name);
         assert_eq!(header.number, target.preset.number);
-        assert!(params.shared.pending_preset.lock().is_none());
+        assert!(!header.modified);
+        // The audio thread gets the complete preset through the mailbox.
+        let (_, record) = params.shared.mailbox.read(0).expect("published");
+        assert_eq!(record.values, target.state.values);
+        assert_eq!(record.wave, target.state.wave);
 
         let err = b.load_preset("factory:999").unwrap_err();
         assert_eq!(err, "Пресет не найден");
@@ -462,7 +466,7 @@ pub(crate) mod tests {
     #[test]
     fn save_then_load_user_preset() {
         let tmp = TempDir::new("bridge-save");
-        let (b, ctx, params) = bridge(&tmp);
+        let (b, _, params) = bridge(&tmp);
         b.set_wave(wave::triangle());
         b.set_macro_assignment(2, ParamId::ArpRate, 0.5);
         assert!(b.current_preset().modified);
@@ -481,11 +485,11 @@ pub(crate) mod tests {
         b.set_macro_assignment(2, ParamId::ArpRate, 0.0);
         assert!(b.current_preset().modified);
         b.load_preset(&id).unwrap();
-        assert_eq!(params.shared.wave.load(), wave::triangle());
-        assert_eq!(params.shared.macros.load().depth(2, ParamId::ArpRate), Some(0.5));
+        assert_eq!(b.wave(), wave::triangle());
+        assert_eq!(b.macro_assignments().depth(2, ParamId::ArpRate), Some(0.5));
         assert!(!b.current_preset().modified);
-        let s = ctx.states.lock().last().cloned().unwrap();
-        assert_eq!(values_from_plugin_state(&s), init_state().values);
+        let (_, record) = params.shared.mailbox.read(0).expect("published");
+        assert_eq!(record.values, crate::presets::init_state().values);
 
         assert!(b.save_user_preset("   ", Category::Arp).is_err());
         b.set_favorite(&id, true);
@@ -496,30 +500,98 @@ pub(crate) mod tests {
         assert!(b.delete_user_preset("factory:014").is_err());
     }
 
+    /// Emulates nih-plug's `GuiContext::set_state` while the plugin is in the processing state
+    /// (always the case in AUv2): the call would block until the audio thread runs.
+    struct ProcessingContext {
+        inner: Arc<MockContext>,
+    }
+
+    impl GuiContext for ProcessingContext {
+        fn plugin_api(&self) -> PluginApi {
+            PluginApi::Clap
+        }
+        fn request_resize(&self) -> bool {
+            true
+        }
+        unsafe fn raw_begin_set_parameter(&self, param: ParamPtr) {
+            unsafe { self.inner.raw_begin_set_parameter(param) }
+        }
+        unsafe fn raw_set_parameter_normalized(&self, param: ParamPtr, normalized: f32) {
+            unsafe { self.inner.raw_set_parameter_normalized(param, normalized) }
+        }
+        unsafe fn raw_end_set_parameter(&self, param: ParamPtr) {
+            unsafe { self.inner.raw_end_set_parameter(param) }
+        }
+        fn get_state(&self) -> PluginState {
+            self.inner.get_state()
+        }
+        fn set_state(&self, _state: PluginState) {
+            panic!("set_state would block the calling thread until the host renders");
+        }
+    }
+
     #[test]
-    fn deferred_loading_when_audio_is_stalled() {
-        let tmp = TempDir::new("bridge-defer");
+    fn editor_preset_loads_never_block_or_outlive_the_editor() {
+        // PLG-03: with the plugin processing but the host not rendering (Logic, idle track), a
+        // preset load must return at once, start no thread, and leave nothing that keeps the
+        // host's context alive once the editor is gone.
+        let tmp = TempDir::new("bridge-plg03");
+        let params = Arc::new(PixlParams::new());
+        let ctx = Arc::new(ProcessingContext { inner: MockContext::new(params.clone()) });
+        let store = Arc::new(PresetStore::new(Some(tmp.0.clone())));
+        let b = PluginBridge::new(ctx.clone(), params.clone(), store);
+        let lib = factory_library();
+        let t0 = std::time::Instant::now();
+        for p in lib.presets.iter().rev().take(8) {
+            b.load_preset(&p.id).unwrap();
+        }
+        // Generous for a loaded machine: blocking means waiting for a render (nih-plug's 1 s
+        // timeout loop), and the mock's `set_state` panics outright.
+        assert!(t0.elapsed() < std::time::Duration::from_millis(500), "the editor thread never blocks");
+        assert_eq!(b.current_preset().name, lib.presets[lib.presets.len() - 8].preset.name);
+        // Coalesced: one preset's gestures in flight, the newest waits (nih-plug's queue is
+        // bounded).
+        let sent = ctx.inner.gestures().len();
+        assert!(sent <= 3 * pixl_core::PARAM_COUNT, "{sent} events queued");
+        drop(b);
+        assert_eq!(Arc::strong_count(&ctx), 1, "nothing keeps the host context alive after the editor is gone");
+        assert!(params.shared.editor.lock().is_none());
+        // Closing the editor sent the waiting preset; at most two presets' gestures are queued.
+        let sent = ctx.inner.gestures().len();
+        assert!(sent <= 6 * pixl_core::PARAM_COUNT, "{sent} events queued");
+        let calls = ctx.inner.gestures();
+        let begins = calls.iter().filter(|c| c.starts_with("begin")).count();
+        let ends = calls.iter().filter(|c| c.starts_with("end")).count();
+        assert_eq!(begins, ends, "every gesture is closed");
+    }
+
+    #[test]
+    fn host_state_load_while_a_load_is_pending_wins() {
+        // A host state load (project/AU preset) while editor gestures wait in nih-plug's queue:
+        // the loaded values are queued after them so they win, and the editor shows them.
+        let tmp = TempDir::new("bridge-cancel");
         let (b, ctx, params) = bridge(&tmp);
-        // Active but no recent process() call: the load goes to the loader thread.
-        params.shared.runtime.set_active(true);
         let lib = factory_library();
         let target = lib.presets.last().unwrap();
         b.load_preset(&target.id).unwrap();
-        // The header shows the new preset immediately.
-        assert_eq!(b.current_preset().name, target.preset.name);
-        for _ in 0..200 {
-            if !ctx.states.lock().is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        let sent = ctx.gestures().len();
+        assert!(sent > 0);
+        // nih-plug restores the parameters (unchanged here) and then the fields.
+        let mut fields = crate::state::default_fields();
+        fields.insert(
+            crate::state::FIELD_WAVE.into(),
+            "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]".into(),
+        );
+        params.deserialize_fields(&fields);
+        let calls = ctx.gestures();
+        assert_eq!(calls.len(), 2 * sent, "the loaded value of every pending parameter follows");
+        for id in ParamId::ALL {
+            assert_eq!(b.param(*id), params.base_value(*id), "{}", id.key());
         }
-        assert_eq!(ctx.states.lock().len(), 1, "loader thread applied the state");
-        // With audio running the load is synchronous again.
-        params.shared.runtime.mark_processed();
-        b.load_preset("factory:014").ok();
-        if lib.get("factory:014").is_some() {
-            assert_eq!(ctx.states.lock().len(), 2);
-        }
+        assert_eq!(b.wave(), [1; 32]);
+        assert_eq!(b.current_preset().name, "Hyrule Fanfare");
+        let (_, record) = params.shared.mailbox.read(0).unwrap();
+        assert_eq!(record.wave, [1; 32], "the audio thread holds the loaded state");
     }
 
     #[test]
@@ -544,7 +616,7 @@ pub(crate) mod tests {
         let ctx2 = Arc::new(MockContext {
             params: params2.clone(),
             calls: Mutex::new(Vec::new()),
-            states: Mutex::new(Vec::new()),
+            state_calls: Mutex::new(0),
             accept_resize: false,
         });
         let b2 = PluginBridge::new(ctx2, params2.clone(), Arc::new(PresetStore::new(None)));

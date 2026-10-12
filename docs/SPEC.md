@@ -212,8 +212,13 @@ frame ticks). Clamp 0..15.
   `tnd = 159.79 / (1/(t/8227 + n/12241) + 100)` (0 if both 0). GB/FREE: linear sum.
 - Pan: per channel `pan` (−100..100, equal-power). GB quantizes to L/C/R (|pan| > 33 → hard).
 - Calibration: one channel at level 15 produces ≈ −6 dBFS peak after DC removal in every
-  chip mode (±1.5 dB), so switching modes keeps loudness consistent. Unison sub-voices are
-  scaled by `1/√n`. Polyphony is not auto-scaled (the output stage protects).
+  chip mode (±1.5 dB), so switching modes keeps loudness consistent. **Exception (product
+  decision, 2026-10-11):** the NES triangle, which has no volume control on the hardware, keeps
+  its authentic 2A03 mixer weight — 1.65 × a pulse's swing, i.e. the same RMS loudness as a
+  full-level pulse (the classic NES triangle bass), ≈ 4.3 dB above the same shape on the GB
+  wave channel. Unison sub-voices are scaled by `1/√n` and must not start coherently (seeded
+  random phases, §4.7; the volume-less NES triangle decorrelates click-free, e.g. by fading the
+  extra layers in over a few ms). Polyphony is not auto-scaled (the output stage protects).
 
 ### 4.4 Frame clock and modulation timing
 
@@ -310,7 +315,11 @@ A DC blocker (5 Hz, first order) is always applied (after the chip filter).
 
 ### 5.2 Bitcrusher (`crush_on`, `crush_bits` 1..16, `crush_rate` 1..48 kHz)
 
-Quantize to `2^bits` levels (fractional bits allowed, mid-tread, clamp ±1). Sample-and-hold at
+Quantize to `2^bits` levels (fractional bits allowed, mid-tread, clamp ±1), relative to the
+signal's slowly tracked DC (≈ 5 Hz one-pole inside the crusher): NES/GB with `analog` on feed
+unipolar DAC levels before the DC-removing chip filter, and crush at 16 bit must be transparent
+for every chip signal. Below 2 bits the mid-tread quantizer crossfades into a symmetric mid-rise
+sign quantizer, so 1 bit is a ±Δ/2 square (the harshest setting), never silence. Sample-and-hold at
 `crush_rate` with a fractional phase accumulator; render the held steps band-limited (BLEP/
 polyBLEP) so non-integer hold periods don't add jitter. `crush_rate ≥ fs` → quantize only.
 Smooth rate changes (~20 ms) so macro sweeps are click-free. Off ⇒ bypass (no cost).
@@ -529,7 +538,16 @@ filters); layout tests that no text overflows its box at 1× in both languages.
 - **Presets store.** Factory library embedded with `include_str!("…/presets/factory.json")`,
   parsed once. User presets: `~/Library/Application Support/PIXL/Presets/*.pixlpreset`
   (atomic writes, sanitized file names); favourites: `…/PIXL/favorites.json`. Loading a preset
-  uses `GuiContext::set_state(PluginState)` so the host is notified and records it.
+  from the editor never blocks the main thread, never spawns a thread and never deserializes,
+  allocates, locks or logs on the audio thread (an AUv2 instance is "processing" for its whole
+  life, so nih-plug's `GuiContext::set_state` would block and restore on the audio thread): the
+  complete preset (values, wave RAM, macros) goes to a lock-free mailbox that the audio thread
+  plays from the next block on — parameters, wave and macros switch together at one block
+  boundary — while every changed parameter is sent to the host as a regular `begin/set/end`
+  gesture so the host displays and records it. Once nih-plug's parameters hold the preset's
+  values the audio thread returns to them, and the preset's wave, macros and header metadata
+  become the persistent state, so a project saved at any moment is self-consistent. Host-driven
+  state loads (project open, host presets) use nih-plug's regular state path.
 - **Editor.** `nih_plug::editor::Editor` impl: `spawn` → `pixl_gui::open_editor` with a
   `PluginBridge` (GuiContext + params + shared state + preset store); `size()` = design size
   × `UiState.scale`; resize via `GuiContext::request_resize`. `pixl_gui::prewarm()` on

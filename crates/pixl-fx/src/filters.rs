@@ -10,6 +10,11 @@
 //!
 //! All state is `f64` (cheap for first-order sections, and keeps 5 Hz poles at 192 kHz
 //! accurate). Coefficients are recomputed by [`ChipFilter::set_sample_rate`].
+//!
+//! Mode switches crossfade the paths over 10 ms. Leaving NES/GB for no filter additionally
+//! releases the old mode's first high-pass gradually (its cutoff glides down to DC), because
+//! the unipolar DC level the high-pass removed only settles slowly after such a switch (the
+//! engine bridges it to avoid a thump) and must not be exposed all at once.
 
 use std::f64::consts::PI;
 
@@ -29,6 +34,14 @@ pub mod cutoffs {
 
 /// Duration of the crossfade when the chip filter mode changes (seconds).
 pub const MODE_XFADE_S: f64 = 0.010;
+/// Leaving a high-passed mode for `None`: time constant (seconds) of the glide of the
+/// transitional high-pass from the old mode's first cutoff down to DC.
+pub const RELEASE_GLIDE_S: f64 = 0.25;
+/// Cutoff (Hz) at which the transitional high-pass stops gliding and lets go of the low end it
+/// still removes.
+pub const RELEASE_END_HZ: f64 = 0.5;
+/// Time constant (seconds) of that final let-go.
+pub const RELEASE_FADE_S: f64 = 0.1;
 
 /// A first-order IIR section `H(z) = (b0 + b1 z⁻¹) / (1 + a1 z⁻¹)` in transposed direct
 /// form II.
@@ -186,6 +199,27 @@ struct ChannelPaths {
     gb: OnePole,
 }
 
+/// Transitional high-pass of the `None` path after leaving a high-passed mode.
+///
+/// NES/GB with `analog` on render unipolar DAC levels whose DC the chip filter removes; FREE
+/// and `analog` off render without DC and without a chip filter. The engine bridges a voice's
+/// DC level across such a switch and lets it settle slowly (no thump), but a plain crossfade
+/// to the unfiltered path would expose that settling DC at once. So the `None` path starts as
+/// the old mode's first high-pass (same output at the switch) and its cutoff glides down to DC
+/// ([`RELEASE_GLIDE_S`]); below [`RELEASE_END_HZ`] the little low end it still removes fades
+/// out ([`RELEASE_FADE_S`]) and the path is an exact bypass again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Release {
+    /// Exact bypass.
+    Off,
+    /// Starts with the next sample, from the high-pass of this cutoff (Hz) in the old path.
+    Pending(ChipFilterMode),
+    /// Gliding: the removed low end is tracked at cutoff `fc` (Hz).
+    Glide { fc: f64 },
+    /// Letting go of the removed low end.
+    Fade,
+}
+
 /// Stereo chip output filter with click-free mode switching (SPEC §5.3).
 #[derive(Clone, Debug)]
 pub struct ChipFilter {
@@ -196,6 +230,13 @@ pub struct ChipFilter {
     /// renormalized on output).
     weight: [f64; 3],
     step: f64,
+    /// Transitional high-pass of the `None` path and the low end it removes per channel.
+    release: Release,
+    low: [f64; 2],
+    /// No sample has been filtered since construction or [`Self::reset`]: a mode change has
+    /// nothing to crossfade or release and takes effect at once (e.g. the first parameters
+    /// after a state load).
+    fresh: bool,
 }
 
 impl ChipFilter {
@@ -207,6 +248,9 @@ impl ChipFilter {
             mode: ChipFilterMode::None,
             weight: [1.0, 0.0, 0.0],
             step: 1.0,
+            release: Release::Off,
+            low: [0.0; 2],
+            fresh: true,
         };
         f.set_sample_rate(fs);
         f
@@ -228,8 +272,19 @@ impl ChipFilter {
         self.step = 1.0 / (MODE_XFADE_S * fs).max(1.0);
     }
 
-    /// Selects the active mode; the change is crossfaded over [`MODE_XFADE_S`].
+    /// Selects the active mode; the change is crossfaded over [`MODE_XFADE_S`]. Leaving a
+    /// high-passed mode for `None` releases its low end gradually (see [`Release`]).
     pub fn set_mode(&mut self, mode: ChipFilterMode) {
+        if self.fresh {
+            self.mode = mode;
+            self.weight = [0.0; 3];
+            self.weight[mode.index()] = 1.0;
+            self.release = Release::Off;
+            return;
+        }
+        if mode == ChipFilterMode::None && self.mode != ChipFilterMode::None {
+            self.release = Release::Pending(self.mode);
+        }
         self.mode = mode;
     }
 
@@ -248,12 +303,64 @@ impl ChipFilter {
         }
         self.weight = [0.0; 3];
         self.weight[self.mode.index()] = 1.0;
+        self.release = Release::Off;
+        self.low = [0.0; 2];
+        self.fresh = true;
+    }
+
+    /// Output of the `None` path for channel `c` (input `x`, the old paths' first high-pass
+    /// outputs `h_nes`, `h_gb`), advancing the transitional high-pass by one sample.
+    #[inline]
+    fn none_path(&mut self, c: usize, x: f64, h_nes: f64, h_gb: f64) -> f64 {
+        match self.release {
+            Release::Off => x,
+            Release::Pending(from) => {
+                // Same output as the old path's first high-pass: it removed `x − h`.
+                self.low[c] = x - if from == ChipFilterMode::Nes { h_nes } else { h_gb };
+                x - self.low[c]
+            }
+            Release::Glide { fc } => {
+                let y = x - self.low[c];
+                self.low[c] += (2.0 * PI * fc / self.fs).min(1.0) * y;
+                y
+            }
+            Release::Fade => x - self.low[c],
+        }
+    }
+
+    /// Advances the release state machine after both channels' samples.
+    #[inline]
+    fn advance_release(&mut self) {
+        match self.release {
+            Release::Off => {}
+            Release::Pending(from) => {
+                let fc = if from == ChipFilterMode::Nes { cutoffs::NES_HPF1 } else { cutoffs::GB_HPF };
+                self.release = Release::Glide { fc };
+            }
+            Release::Glide { fc } => {
+                let fc = fc * (-1.0 / (RELEASE_GLIDE_S * self.fs)).exp();
+                self.release = if fc < RELEASE_END_HZ { Release::Fade } else { Release::Glide { fc } };
+            }
+            Release::Fade => {
+                let k = (-1.0 / (RELEASE_FADE_S * self.fs)).exp();
+                for v in &mut self.low {
+                    *v *= k;
+                }
+                if self.low.iter().all(|v| v.abs() < 1e-9) {
+                    self.release = Release::Off;
+                    self.low = [0.0; 2];
+                }
+            }
+        }
     }
 
     /// Filters a stereo block in place.
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
         let target = self.mode.index();
         let n = l.len().min(r.len());
+        if n > 0 {
+            self.fresh = false;
+        }
         let settled = self.weight[target] == 1.0;
         for i in 0..n {
             let mut out = [0f64; 2];
@@ -264,6 +371,7 @@ impl ChipFilter {
                 let h2 = p.nes[1].process(h1);
                 let nes = p.nes[2].process(h2);
                 let gb = p.gb.process(x);
+                let x = self.none_path(c, x, h1, gb);
                 out[c] = if settled {
                     [x, nes, gb][target]
                 } else {
@@ -277,6 +385,7 @@ impl ChipFilter {
                     *w = if k == target { (*w + self.step).min(1.0) } else { (*w - self.step).max(0.0) };
                 }
             }
+            self.advance_release();
             l[i] = out[0] as f32;
             r[i] = out[1] as f32;
         }
@@ -474,6 +583,80 @@ mod tests {
         }
         // The sine itself moves at most 2π·220/48000·0.3 ≈ 0.0086 per sample.
         assert!(max_jump < 0.02, "max jump {max_jump}");
+    }
+
+    #[test]
+    fn mode_changes_before_the_first_sample_apply_at_once() {
+        // A fresh instance starts from the defaults (GB) and receives a FREE patch's
+        // parameters before any audio: nothing to crossfade or release, so the very first
+        // sample is already an exact bypass.
+        let mut cf = ChipFilter::new(48_000.0);
+        cf.set_mode(ChipFilterMode::Gb);
+        cf.reset();
+        cf.set_mode(ChipFilterMode::None);
+        let input: Vec<f32> = (0..2048).map(|i| if (i / 90) % 2 == 0 { 0.5 } else { -0.5 }).collect();
+        let (mut l, mut r) = (input.clone(), input.clone());
+        cf.process(&mut l, &mut r);
+        assert_eq!(l, input);
+        assert_eq!(r, input);
+        // Once audio has run, the same change is crossfaded and released as usual.
+        cf.set_mode(ChipFilterMode::Gb);
+        let (mut l, mut r) = (input.clone(), input.clone());
+        cf.process(&mut l, &mut r);
+        cf.set_mode(ChipFilterMode::None);
+        let (mut l, mut r) = (input.clone(), input.clone());
+        cf.process(&mut l, &mut r);
+        assert_ne!(l, input, "a switch after audio is not a jump");
+    }
+
+    #[test]
+    fn leaving_a_high_passed_mode_releases_the_low_end_gradually() {
+        // FX-03: GB (`analog` on) → FREE. The engine holds the unipolar DC level across its
+        // voice crossfade and lets it settle with 100 ms; the chip filter must not expose that
+        // settling DC at once (a 10 ms crossfade to the unfiltered path would: a thump). After
+        // the release the None path is an exact bypass again.
+        let fs = 48_000.0;
+        let run = |release: bool| {
+            let mut cf = ChipFilter::new(fs);
+            cf.set_mode(ChipFilterMode::Gb);
+            cf.reset();
+            let n = (fs * 3.0) as usize;
+            let switch = (fs * 0.5) as usize;
+            let mut out = Vec::with_capacity(n);
+            let mut input = Vec::with_capacity(n);
+            for start in (0..n).step_by(64) {
+                if start == switch {
+                    cf.set_mode(ChipFilterMode::None);
+                    if !release {
+                        cf.release = Release::Off;
+                    }
+                }
+                let mut l: Vec<f32> = (start..start + 64)
+                    .map(|i| {
+                        let t = i as f64 / fs;
+                        let dc = if i < switch { 0.33 } else { 0.33 * (-(t - 0.5) / 0.1).exp() };
+                        (dc + 0.3 * (2.0 * PI * 523.0 * t).sin()) as f32
+                    })
+                    .collect();
+                input.extend_from_slice(&l);
+                let mut r = l.clone();
+                cf.process(&mut l, &mut r);
+                out.extend_from_slice(&l);
+            }
+            // Low end of the output: mean over four periods of the tone.
+            let w = 367;
+            let low: Vec<f64> =
+                out.chunks_exact(w).map(|c| c.iter().map(|v| *v as f64).sum::<f64>() / w as f64).collect();
+            let worst = low.iter().skip(4).fold(0.0f64, |m, v| m.max(v.abs()));
+            let bypass = out[n - 4800..] == input[n - 4800..];
+            (worst, bypass)
+        };
+        let (released, bypass) = run(true);
+        let (plain, _) = run(false);
+        println!("low end after GB → None: {released:.4} with the release, {plain:.4} with a plain crossfade");
+        assert!(released < 0.03, "{released}");
+        assert!(plain > 0.2, "the plain crossfade exposes the DC ({plain})");
+        assert!(bypass, "exact bypass after the release");
     }
 
     #[test]

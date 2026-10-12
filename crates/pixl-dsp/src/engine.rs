@@ -325,7 +325,8 @@ impl Engine {
     /// Update parameters (effective, macro-applied plain values). Real-time safe.
     ///
     /// Values are sanitized. Continuous values are smoothed; a chip mode or `analog` change
-    /// crossfades every sounding voice into the new mode (2 ms out, 2 ms in).
+    /// that alters the sound crossfades every sounding voice into the new mode (2 ms out, 2 ms
+    /// in).
     pub fn set_params(&mut self, params: &ParamValues) {
         let mut p = *params;
         for (v, spec) in p.0.iter_mut().zip(PARAMS.iter()) {
@@ -345,10 +346,17 @@ impl Engine {
         }
         let cfg = ModeCfg { chip: sh.res.chip, analog: sh.res.analog };
         if cfg != sh.cfg {
+            // Only a change that alters the sound crossfades the voices (`analog` does nothing
+            // in FREE: switching there would only cut a 4 ms hole into every note).
+            let audible = !cfg.renders_like(&sh.cfg);
             sh.cfg = cfg;
             let fs = sh.fs;
             for v in self.voices.iter_mut().filter(|v| v.active) {
-                v.begin_switch(fs);
+                if audible {
+                    v.begin_switch(fs);
+                } else {
+                    v.adopt_equivalent_cfg(cfg);
+                }
             }
         }
         self.apply_pending();
@@ -615,6 +623,16 @@ impl Engine {
     fn release_note(&mut self, note: u8) {
         self.sustained[note as usize] = false;
         self.sh.hold_remove(note);
+        let mut released = [false; 128];
+        released[note as usize] = true;
+        self.resolve_releases(&released);
+    }
+
+    /// Release the voices of `released` notes, which were just removed from the held lists.
+    /// Mono voices return to the most recent note still held (MONO retriggers, LEGATO not) —
+    /// resolved once for all released notes, so releasing several notes together (pedal up)
+    /// never passes through notes that are being released as well.
+    fn resolve_releases(&mut self, released: &[bool; 128]) {
         let res = self.sh.res;
         let fs = self.sh.fs;
         // HELD arpeggiator voice: releases once no note is held any more.
@@ -631,7 +649,7 @@ impl Engine {
             .mono_voice
             .filter(|&i| self.voices[i].active && self.voices[i].gate && self.voices[i].kind == Kind::Normal);
         if mono {
-            if let Some(i) = mv.filter(|&i| self.voices[i].note == note) {
+            if let Some(i) = mv.filter(|&i| released[self.voices[i].note as usize & 127]) {
                 if let Some(&top) = self.sh.held_order[..self.sh.n_order].last() {
                     // Return to the most recent still-held note (MONO retriggers, LEGATO not).
                     let glide_ok = res.glide_on;
@@ -661,7 +679,12 @@ impl Engine {
             }
         }
         for (i, v) in self.voices.iter_mut().enumerate() {
-            if v.active && v.gate && v.kind == Kind::Normal && v.note == note && !(mono && Some(i) == mv) {
+            if v.active
+                && v.gate
+                && v.kind == Kind::Normal
+                && released[v.note as usize & 127]
+                && !(mono && Some(i) == mv)
+            {
                 v.release(&res, fs);
             }
         }
@@ -670,10 +693,19 @@ impl Engine {
     fn set_pedal(&mut self, on: bool) {
         self.pedal = on;
         if !on {
-            for n in 0..128u8 {
-                if self.sustained[n as usize] && !self.keys[n as usize] {
-                    self.release_note(n);
+            // Release every sustained note together (see `resolve_releases`).
+            let mut released = [false; 128];
+            let mut any = false;
+            for (n, release) in released.iter_mut().enumerate() {
+                if self.sustained[n] && !self.keys[n] {
+                    self.sustained[n] = false;
+                    self.sh.hold_remove(n as u8);
+                    *release = true;
+                    any = true;
                 }
+            }
+            if any {
+                self.resolve_releases(&released);
             }
         }
     }
@@ -796,7 +828,8 @@ impl Engine {
             for v in self.voices.iter_mut() {
                 if v.active {
                     match v.render(&base, &self.ticks, lenf, &mut self.blip) {
-                        VoiceEnd::Running | VoiceEnd::Finished | VoiceEnd::Killed => {}
+                        VoiceEnd::Running => v.bridge_run(len, sh.fs, &mut self.blip),
+                        VoiceEnd::Finished | VoiceEnd::Killed => {}
                     }
                 } else if v.discharging {
                     v.discharge_run(len, sh.fs, &mut self.blip);
@@ -805,6 +838,14 @@ impl Engine {
         }
 
         self.blip.read(out_l, out_r);
+        // Bounded drift (SPEC §4.2): the output settles exactly to what the voices hold.
+        let (mut settled_l, mut settled_r) = (0.0f64, 0.0f64);
+        for v in self.voices.iter().filter(|v| v.active || v.discharging) {
+            let (l, r) = v.output_level();
+            settled_l += l;
+            settled_r += r;
+        }
+        self.blip.reanchor(settled_l, settled_r);
 
         // Advance the global clocks to the chunk end and move the time origin.
         self.sh.smooth.advance(lenf - t_last);

@@ -240,6 +240,16 @@ impl Adsr {
         }
     }
 
+    /// Samples until a rising attack reaches its peak (0 outside the attack stage or for an
+    /// instant attack).
+    pub fn time_to_peak(&self, p: &EnvParams) -> f64 {
+        if self.stage == Stage::Attack && p.attack > 0.0 {
+            (1.0 - self.level).max(0.0) * p.attack
+        } else {
+            0.0
+        }
+    }
+
     /// The level `dt` samples from now, without changing the state.
     pub fn peek(&self, dt: f64, p: &EnvParams) -> f32 {
         let mut e = *self;

@@ -1,0 +1,107 @@
+# The PIXL parameter table as mirrored by tools/presets/pixl_params.py.
+# Written by tools/presets/generate.py; crates/pixl-core/tests/factory_library.rs
+# rebuilds this listing from pixl_core::PARAMS and requires it to be identical.
+param chip Global enum 0 2 1 1 fixed NES|GB|FREE
+param out_gain Global float -36 12 1 0 mod
+param voice_mode Global enum 0 2 1 0 fixed POLY|MONO|LEGATO
+param polyphony Global int 1 16 1 8 fixed
+param frame_rate Global enum 0 1 1 0 fixed NTSC|PAL
+param pb_range Global int 0 24 1 2 fixed
+param vel_sens Global float 0 100 1 50 mod
+param tune Global float -100 100 1 0 mod
+param analog Global bool 0 1 1 1 fixed
+param p1_on Pulse_1 bool 0 1 1 0 fixed
+param p1_level Pulse_1 float 0 15 1 12 mod
+param p1_pan Pulse_1 float -100 100 1 0 mod
+param p1_coarse Pulse_1 int -24 24 1 0 mod
+param p1_fine Pulse_1 float -100 100 1 0 mod
+param p1_attack Pulse_1 float 0 5000 0.25 2 mod
+param p1_decay Pulse_1 float 0 5000 0.25 400 mod
+param p1_sustain Pulse_1 float 0 15 1 12 mod
+param p1_release Pulse_1 float 0 5000 0.25 150 mod
+param p1_duty Pulse_1 float 2 98 1 25 mod
+param p2_on Pulse_2 bool 0 1 1 0 fixed
+param p2_level Pulse_2 float 0 15 1 12 mod
+param p2_pan Pulse_2 float -100 100 1 0 mod
+param p2_coarse Pulse_2 int -24 24 1 0 mod
+param p2_fine Pulse_2 float -100 100 1 0 mod
+param p2_attack Pulse_2 float 0 5000 0.25 2 mod
+param p2_decay Pulse_2 float 0 5000 0.25 400 mod
+param p2_sustain Pulse_2 float 0 15 1 12 mod
+param p2_release Pulse_2 float 0 5000 0.25 150 mod
+param p2_duty Pulse_2 float 2 98 1 50 mod
+param wv_on Wave bool 0 1 1 1 fixed
+param wv_level Wave float 0 15 1 12 mod
+param wv_pan Wave float -100 100 1 0 mod
+param wv_coarse Wave int -24 24 1 0 mod
+param wv_fine Wave float -100 100 1 0 mod
+param wv_attack Wave float 0 5000 0.25 2 mod
+param wv_decay Wave float 0 5000 0.25 400 mod
+param wv_sustain Wave float 0 15 1 12 mod
+param wv_release Wave float 0 5000 0.25 150 mod
+param ns_on Noise bool 0 1 1 0 fixed
+param ns_level Noise float 0 15 1 12 mod
+param ns_pan Noise float -100 100 1 0 mod
+param ns_coarse Noise int -24 24 1 0 mod
+param ns_fine Noise float -100 100 1 0 mod
+param ns_attack Noise float 0 5000 0.25 2 mod
+param ns_decay Noise float 0 5000 0.25 400 mod
+param ns_sustain Noise float 0 15 1 12 mod
+param ns_release Noise float 0 5000 0.25 150 mod
+param ns_mode Noise enum 0 1 1 0 fixed LONG|SHORT
+param ns_period Noise int 0 15 1 5 mod
+param ns_track Noise bool 0 1 1 0 fixed
+param sweep_on Sweep bool 0 1 1 1 fixed
+param sweep_amt Sweep float 0 48 1 12 mod
+param sweep_dir Sweep enum 0 1 1 0 fixed DOWN|UP
+param sweep_time Sweep float 5 2000 0.3 180 mod
+param sweep_curve Sweep enum 0 1 1 0 fixed EXP|LIN
+param vib_on Vibrato bool 0 1 1 1 fixed
+param vib_rate Vibrato float 0.1 20 0.354 5.5 mod
+param vib_depth Vibrato float 0 100 1 18 mod
+param vib_delay Vibrato float 0 2000 0.5 120 mod
+param vib_fade Vibrato float 0 2000 0.5 150 mod
+param vib_shape Vibrato enum 0 2 1 0 fixed SINE|TRI|SQUARE
+param arp_on Arp bool 0 1 1 0 fixed
+param arp_mode Arp enum 0 4 1 0 fixed UP|DOWN|UPDOWN|RANDOM|ORDER
+param arp_rate Arp float 1 60 0.5 20 mod
+param arp_sync Arp bool 0 1 1 0 fixed
+param arp_div Arp enum 0 7 1 3 fixed 1/4|1/8|1/8T|1/16|1/16T|1/32|1/32T|1/64
+param arp_oct Arp int 1 4 1 1 mod
+param arp_chord Arp enum 0 11 1 0 fixed HELD|MAJ|MIN|SUS2|SUS4|MAJ7|MIN7|DOM7|DIM|AUG|POW|OCT
+param crush_on Crush bool 0 1 1 0 fixed
+param crush_bits Crush float 1 16 1 6 mod
+param crush_rate Crush float 1000 48000 0.3 11025 mod
+param glide_on Glide bool 0 1 1 1 fixed
+param glide_time Glide float 1 2000 0.3 90 mod
+param glide_mode Glide enum 0 1 1 1 fixed ALWAYS|LEGATO
+param glide_curve Glide enum 0 1 1 0 fixed EXP|LIN
+param uni_on Unison bool 0 1 1 1 fixed
+param uni_voices Unison int 1 4 1 3 mod
+param uni_detune Unison float 0 50 1 14 mod
+param uni_width Unison float 0 100 1 60 mod
+param echo_on Echo bool 0 1 1 0 fixed
+param echo_time Echo float 10 1000 0.4 250 mod
+param echo_sync Echo bool 0 1 1 1 fixed
+param echo_div Echo enum 0 7 1 2 fixed 1/4|1/8|1/8D|1/8T|1/16|1/16D|1/16T|1/32
+param echo_fb Echo float 0 95 1 40 mod
+param echo_mix Echo float 0 100 1 25 mod
+param echo_fir Echo enum 0 5 1 1 fixed FLAT|WARM|DARK|CAVE|BRIGHT|LOFI
+param echo_width Echo float 0 100 1 50 mod
+param macro1 Macros float 0 100 1 62 fixed
+param macro2 Macros float 0 100 1 30 fixed
+param macro3 Macros float 0 100 1 45 fixed
+param macro4 Macros float 0 100 1 20 fixed
+macro_count 4
+macro_slots 8
+min_depth 0.005
+macro_names BRIGHT DIRT MOTION SPACE
+factory_default 0 sweep_amt 0.1
+factory_default 0 uni_detune -0.1
+factory_default 1 crush_bits -0.4
+factory_default 1 uni_detune 0.2
+factory_default 2 vib_depth 0.3
+factory_default 2 glide_time 0.2
+factory_default 3 uni_width 0.4
+factory_default 3 echo_mix 0.5
+factory_default 3 wv_release 0.15

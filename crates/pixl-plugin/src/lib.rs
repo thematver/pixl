@@ -12,6 +12,7 @@
 //!   block splitting, macro modulation, telemetry);
 //! - [`presets`]: factory library, user presets and favourites;
 //! - [`bridge`]: the [`pixl_core::Bridge`] implementation used by the editor;
+//! - [`handover`]: editor preset loads, applied atomically without blocking any thread;
 //! - [`editor`]: the nih-plug editor embedding the native PIXL GUI (cargo feature `gui`,
 //!   on by default; without it hosts show their generic parameter UI);
 //! - `entry`: the exported `clap_entry` (nih-plug's, with a hardened state loader).
@@ -22,6 +23,7 @@
 pub mod bridge;
 pub mod editor;
 mod entry;
+pub mod handover;
 pub mod midi;
 pub mod params;
 pub mod presets;
@@ -56,9 +58,8 @@ impl Default for Pixl {
         // Start the GPU context in the background so the first editor opens instantly.
         #[cfg(feature = "gui")]
         pixl_gui::prewarm();
-        // Parse the factory library and start the liveness clock off the audio thread.
+        // Parse the factory library off the audio thread.
         let _ = presets::factory_library();
-        let _ = state::epoch();
         Self {
             params: Arc::new(PixlParams::new()),
             store: Arc::new(PresetStore::system()),
@@ -78,6 +79,17 @@ impl Pixl {
     /// The instance's preset store.
     pub fn preset_store(&self) -> &Arc<PresetStore> {
         &self.store
+    }
+}
+
+/// What to tell the user (log) about a newly configured sample rate, if anything.
+fn rate_notice(sr: f32, supported: bool) -> Option<String> {
+    if !supported {
+        Some(format!("PIXL cannot run at {sr} Hz (8-768 kHz); the output stays silent"))
+    } else if !(processor::SPEC_MIN_SAMPLE_RATE..=processor::SPEC_MAX_SAMPLE_RATE).contains(&sr) {
+        Some(format!("PIXL runs at {sr} Hz, outside the 22.05-192 kHz range it is specified for"))
+    } else {
+        None
     }
 }
 
@@ -136,14 +148,16 @@ impl Plugin for Pixl {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        // nih-plug also calls this after every state load (possibly on the audio thread):
-        // nothing below allocates unless the configuration actually changed.
+        // nih-plug also calls this after every host state load: nothing below allocates or
+        // logs unless the configuration actually changed (a restore never changes it).
         let sr = buffer_config.sample_rate;
-        self.processor.prepare(sr);
-        if !self.processor.is_rate_supported() {
-            nih_warn!("PIXL cannot run at {sr} Hz (8-768 kHz); the output stays silent");
-        } else if !(processor::SPEC_MIN_SAMPLE_RATE..=processor::SPEC_MAX_SAMPLE_RATE).contains(&sr) {
-            nih_log!("PIXL runs at {sr} Hz, outside the 22.05-192 kHz range it is specified for");
+        if self.processor.prepare(sr) {
+            let supported = self.processor.is_rate_supported();
+            match rate_notice(sr, supported) {
+                Some(message) if !supported => nih_warn!("{message}"),
+                Some(message) => nih_log!("{message}"),
+                None => {}
+            }
         }
         let max = buffer_config.max_buffer_size as usize;
         for s in &mut self.scratch {
@@ -151,16 +165,11 @@ impl Plugin for Pixl {
                 s.resize(max, 0.0);
             }
         }
-        self.params.shared.runtime.set_active(true);
         true
     }
 
     fn reset(&mut self) {
         self.processor.reset();
-    }
-
-    fn deactivate(&mut self) {
-        self.params.shared.runtime.set_active(false);
     }
 
     fn process(
@@ -170,7 +179,6 @@ impl Plugin for Pixl {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let shared = &self.params.shared;
-        shared.runtime.mark_processed();
         // With sample-accurate automation nih-plug splits the host block at every parameter
         // change, so the values are constant for this call.
         self.params.read_values(&mut self.base);
@@ -179,12 +187,13 @@ impl Plugin for Pixl {
             engine_transport(t.tempo, t.playing, t.pos_beats())
         };
         let input = BlockInput { params: &self.base, wave: &shared.wave, macros: &shared.macros, transport };
+        let handover = Some(&shared.mailbox);
         let events = EventStream::new(|| context.next_event().map(|e| map_note_event(&e)));
 
         let samples = buffer.samples();
         let status = match buffer.as_slice() {
             [left, right, rest @ ..] => {
-                let status = self.processor.process(&input, events, left, right);
+                let status = self.processor.process_with(&input, handover, events, left, right);
                 for ch in rest {
                     ch.fill(0.0);
                 }
@@ -194,7 +203,7 @@ impl Plugin for Pixl {
                 // Fewer than two channels: render stereo into scratch and downmix.
                 let n = samples.min(self.scratch[0].len()).min(self.scratch[1].len());
                 let [l, r] = &mut self.scratch;
-                let status = self.processor.process(&input, events, &mut l[..n], &mut r[..n]);
+                let status = self.processor.process_with(&input, handover, events, &mut l[..n], &mut r[..n]);
                 for ch in other.iter_mut() {
                     for (i, x) in ch.iter_mut().enumerate() {
                         *x = if i < n { 0.5 * (l[i] + r[i]) } else { 0.0 };
@@ -243,6 +252,19 @@ mod tests {
         assert_eq!(Pixl::AUDIO_IO_LAYOUTS.len(), 1);
         assert_eq!(Pixl::AUDIO_IO_LAYOUTS[0].main_output_channels, NonZeroU32::new(2));
         assert_eq!(Pixl::AUDIO_IO_LAYOUTS[0].main_input_channels, None);
+    }
+
+    #[test]
+    fn rate_notices_only_for_unusual_rates() {
+        assert_eq!(rate_notice(48_000.0, true), None);
+        assert_eq!(rate_notice(22_050.0, true), None);
+        assert!(rate_notice(16_000.0, true).is_some_and(|m| m.contains("outside")));
+        assert!(rate_notice(4_000.0, false).is_some_and(|m| m.contains("cannot")));
+        // Re-initializing at the same rate (nih-plug does it after every state load) neither
+        // re-prepares nor logs.
+        let mut p = Processor::new();
+        assert!(p.prepare(16_000.0));
+        assert!(!p.prepare(16_000.0));
     }
 
     #[test]

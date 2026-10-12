@@ -79,3 +79,26 @@ fn pulse_and_wave_alias_across_the_keyboard() {
         }
     }
 }
+
+#[test]
+fn fast_wave_integrates_and_dumps_and_stays_clean() {
+    // SPEC §4.2 (DSP-07): above ~4 transitions per output sample the wave channel switches to
+    // integrate-and-dump (its CPU cost no longer grows with pitch). The result must keep its
+    // level and stay clean: aliases of the boxcar-averaged staircase ≤ −40 dB.
+    let level = |note: u8| {
+        let mut rig = Rig::new(FS, clean(ChipMode::Free, 2));
+        rig.on(note, 1.0);
+        rig.left(secs(FS, 0.3));
+        let x = rig.left(N);
+        let f0 = hz(note as f64);
+        let r = alias_report_band(&x, FS as f64, f0, 20_000.0);
+        println!("FREE wave note {note} ({f0:.0} Hz): fundamental {:.2} dBFS, worst audible non-harmonic {:.1} dB at {:.0} Hz", r.fundamental_db, r.worst_db, r.worst_hz);
+        r
+    };
+    let reference = level(100);
+    for note in [113u8, 116, 119] {
+        let r = level(note);
+        assert!((r.fundamental_db - reference.fundamental_db).abs() < 1.5, "note {note}: {r:?} vs {reference:?}");
+        assert!(r.worst_db <= -40.0, "note {note}: {r:?}");
+    }
+}

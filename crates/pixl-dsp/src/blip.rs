@@ -15,10 +15,15 @@
 //!
 //! **Drift-free integration.** The integrator is an `f64` accumulator. Instead of a leak (which
 //! would high-pass the signal and turn every unipolar note end into a slow DC tail), the
-//! buffer keeps the exact `f64` sum of every delta it was given. In exact arithmetic,
-//! *integrated output + not-yet-integrated kernel tail = sum of all deltas*; after every block
-//! the accumulator is re-anchored to make that identity hold, so the `f32` kernel and buffer
-//! rounding can never accumulate (the per-block correction is ~1e-7 of a step: inaudible).
+//! accumulator is re-anchored after every block so that *integrated output + not-yet-integrated
+//! kernel tail = the level the output must settle to*. Standing alone, the buffer uses the exact
+//! `f64` sum of every delta it was given ([`BlipBuffer::read`]), so the `f32` kernel and buffer
+//! rounding can never accumulate. The engine goes one step further and re-anchors to the exact
+//! sum of its voices' current levels ([`BlipBuffer::reanchor`]): the deltas a voice emits are
+//! `f32` products whose rounding does not telescope exactly against the voice's own level
+//! bookkeeping, and with millions of transitions that residue would otherwise build up into a
+//! DC offset that outlives every note. Either way the per-block correction is ~1e-7 of a step
+//! (inaudible) and the output returns to exactly zero once nothing sounds.
 
 use crate::analysis::fft;
 use std::sync::OnceLock;
@@ -178,6 +183,9 @@ fn design() -> Kernel {
 /// will output; they must lie in `0..capacity` (out-of-range times are clamped, never panic).
 pub struct BlipBuffer {
     kernel: &'static Kernel,
+    /// Impulse buffers (`f32`: the kernel add is the engine's innermost loop, and `f32` halves
+    /// its cost against `f64`; the rounding is ~1e-7 of a step, and drift is bounded by the
+    /// re-anchoring described in the module docs).
     l: Vec<f32>,
     r: Vec<f32>,
     acc_l: f64,
@@ -289,8 +297,7 @@ impl BlipBuffer {
         self.r.copy_within(len..len + TAPS + 1, 0);
         self.r[TAPS + 1..len + TAPS + 1].fill(0.0);
         // Re-anchor: accumulator + pending tail must equal the exact sum of all deltas.
-        let tail_l: f64 = self.l[..TAPS + 1].iter().map(|v| *v as f64).sum();
-        let tail_r: f64 = self.r[..TAPS + 1].iter().map(|v| *v as f64).sum();
+        let (tail_l, tail_r) = self.tail();
         al = self.sum_l - tail_l;
         ar = self.sum_r - tail_r;
         if !(al.is_finite() && ar.is_finite() && self.sum_l.is_finite() && self.sum_r.is_finite()) {
@@ -299,6 +306,28 @@ impl BlipBuffer {
         }
         self.acc_l = al;
         self.acc_r = ar;
+    }
+
+    /// Sum of the pending kernel tail (left, right): deltas given but not yet integrated.
+    fn tail(&self) -> (f64, f64) {
+        let tail_l: f64 = self.l[..TAPS + 1].iter().map(|v| *v as f64).sum();
+        let tail_r: f64 = self.r[..TAPS + 1].iter().map(|v| *v as f64).sum();
+        (tail_l, tail_r)
+    }
+
+    /// Re-anchor the integrator after a [`Self::read`] to the level the output must settle to
+    /// (e.g. the exact sum of all sources' current levels): the accumulator becomes `settled −
+    /// pending tail`, so whatever rounding the emitted deltas carried disappears. Non-finite
+    /// input is ignored.
+    pub fn reanchor(&mut self, settled_l: f64, settled_r: f64) {
+        if !(settled_l.is_finite() && settled_r.is_finite()) {
+            return;
+        }
+        let (tail_l, tail_r) = self.tail();
+        self.sum_l = settled_l;
+        self.sum_r = settled_r;
+        self.acc_l = settled_l - tail_l;
+        self.acc_r = settled_r - tail_r;
     }
 
     /// True when the output has settled (no pending kernel tail) at a level below
@@ -451,6 +480,31 @@ mod tests {
         }
         assert!(l[63].abs() < 1e-9 && r[63].abs() < 1e-9, "{} {}", l[63], r[63]);
         assert!(b.is_quiet(1e-6));
+    }
+
+    #[test]
+    fn reanchoring_removes_rounding_residue_without_touching_the_tail() {
+        let mut b = BlipBuffer::new(64);
+        let mut l = [0.0f32; 64];
+        let mut r = [0.0f32; 64];
+        // A step whose kernel tail spills into the next block, with a deliberately wrong sum.
+        b.add_step(60.3, 0.5, -0.25);
+        b.add_raw(10, 1e-4, 1e-4); // stray residue the sources do not account for
+        b.read(&mut l, &mut r);
+        b.reanchor(0.5, -0.25);
+        for _ in 0..2 {
+            b.read(&mut l, &mut r);
+        }
+        assert!((l[63] - 0.5).abs() < 1e-7 && (r[63] + 0.25).abs() < 1e-7, "{} {}", l[63], r[63]);
+        // Back to zero exactly once the sources are silent.
+        b.add_step(5.0, -0.5, 0.25);
+        b.read(&mut l, &mut r);
+        b.reanchor(0.0, 0.0);
+        b.read(&mut l, &mut r);
+        assert!(l.iter().chain(r.iter()).all(|v| v.abs() < 1e-9));
+        assert!(b.is_quiet(1e-9));
+        b.reanchor(f64::NAN, 0.0);
+        assert!(b.is_quiet(1e-9));
     }
 
     #[test]

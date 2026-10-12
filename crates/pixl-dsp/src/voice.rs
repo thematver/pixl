@@ -11,9 +11,14 @@
 //!   the pan-weighted DAC levels of its channels, so the mono sum is exactly the 2A03 output.
 //!
 //! Modulation is evaluated only at ticks (frame ticks in chip modes, every 16 samples in
-//! FREE) and at note events. Each evaluation samples envelopes and modulators half a tick
-//! ahead, i.e. at the centre of the coming step, so the chip modes' staircase is centred on
-//! the ideal curve and a fast attack sounds at full level from the first frame.
+//! FREE) and at note events. A tick samples envelopes and modulators half a tick ahead, i.e. at
+//! the centre of the coming step, so the chip modes' staircase is centred on the ideal curve.
+//! A note event applies the initial values (SPEC §4.4): sweep, vibrato and glide at their
+//! start, envelopes at the attack peak at the latest (an instant attack plays full level), and
+//! in chip modes the note's first frame keeps them until the first frame tick at least half a
+//! frame after the event — so envelopes, sweeps and glides shorter than a frame are always
+//! heard for one frame (½ to 1½ frame periods, depending on where the note falls relative to
+//! the global frame clock).
 
 use crate::blip::BlipBuffer;
 use crate::chip::{
@@ -40,9 +45,14 @@ pub const MICRO_STEP: f64 = 0.01;
 pub const FREE_CONTROL: f64 = 16.0;
 /// Time constant of the smooth discharge of a level left behind by a finished voice (a halted
 /// NES triangle), seconds.
-pub const DISCHARGE_TAU: f64 = 0.16;
+pub const DISCHARGE_TAU: f64 = 0.1;
 /// Discharged levels below this are removed in one (inaudible) step.
 pub const DISCHARGE_FLOOR: f64 = 1e-6;
+/// Time constant (seconds) with which a voice's DC level settles to the new mode after a
+/// switch between the bipolar and the unipolar DAC (or into/out of the NES mixer): slow enough
+/// that the chip filters and the DC blocker turn it into an inaudible drift instead of a
+/// thump.
+pub const DC_BRIDGE_TAU: f64 = 0.1;
 
 /// 2A03 pulse-group numerator.
 const NES_P_NUM: f32 = 95.88;
@@ -81,6 +91,11 @@ impl ModeCfg {
     pub fn nes_mixer(&self) -> bool {
         self.chip == ChipMode::Nes && self.analog
     }
+
+    /// Whether both configurations render identically (`analog` only matters in NES/GB).
+    pub fn renders_like(&self, other: &ModeCfg) -> bool {
+        self.chip == other.chip && self.unipolar() == other.unipolar() && self.nes_mixer() == other.nes_mixer()
+    }
 }
 
 impl Default for ModeCfg {
@@ -111,6 +126,15 @@ pub struct Tick {
     pub arp_count: u64,
     /// Smoothed parameters at this tick.
     pub sm: Smoothed,
+}
+
+/// Why a voice re-evaluates its modulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Eval {
+    /// A note event (start, retrigger, legato): initial values.
+    Event,
+    /// A modulation tick or another re-evaluation.
+    Tick,
 }
 
 /// Everything a voice reads while updating.
@@ -148,6 +172,9 @@ pub struct Reset {
     pub wave_pos: Option<f64>,
     /// New noise register.
     pub lfsr: Option<u16>,
+    /// NES triangle: wait on the start step for this fraction (0..1) of a period before
+    /// stepping (a click-free random phase for unison layers).
+    pub wave_delay: Option<f64>,
 }
 
 /// Per-voice values shared by its sub-voices during one update.
@@ -201,6 +228,9 @@ pub struct SubVoice {
     /// Memo of the last pan → gains conversions.
     pan_key: [f32; 4],
     pan_val: [(f32, f32); 4],
+    /// NES triangle unison layer: start delay (fraction of a period) still to apply when the
+    /// sequencer first runs (the gate may open only after the note-on, with the attack).
+    tri_delay: Option<f64>,
 }
 
 impl Default for SubVoice {
@@ -231,6 +261,7 @@ impl SubVoice {
             freq_val: [0.0; 4],
             pan_key: [f32::NAN; 4],
             pan_val: [(1.0, 1.0); 4],
+            tri_delay: None,
         }
     }
 
@@ -264,6 +295,7 @@ impl SubVoice {
         self.fade = 1.0;
         self.out_l = 0.0;
         self.out_r = 0.0;
+        self.tri_delay = None;
         self.wave.park(WaveOsc::TRIANGLE_REST_STEP);
     }
 
@@ -281,8 +313,14 @@ impl SubVoice {
     /// 2A03 pulse group output (left, right) before the fade.
     #[inline]
     fn nes_pulse_group(&self) -> (f32, f32) {
-        let d0 = self.dac(0, self.pulse[0].u());
-        let d1 = self.dac(1, self.pulse[1].u());
+        self.nes_pulse_mix(self.pulse[0].u(), self.pulse[1].u())
+    }
+
+    /// 2A03 pulse group output for the pulses' unit values `u0`, `u1`.
+    #[inline]
+    fn nes_pulse_mix(&self, u0: f32, u1: f32) -> (f32, f32) {
+        let d0 = self.dac(0, u0);
+        let d1 = self.dac(1, u1);
         let cp = NES_P_NUM / (NES_P_DEN + 100.0 * (d0 + d1).max(0.0));
         (cp * (d0 * self.kl[0] + d1 * self.kl[1]), cp * (d0 * self.kr[0] + d1 * self.kr[1]))
     }
@@ -290,10 +328,38 @@ impl SubVoice {
     /// 2A03 triangle/noise group output (left, right) before the fade.
     #[inline]
     fn nes_tnd_group(&self) -> (f32, f32) {
-        let t = self.dac(2, self.wave.u()) / NES_TRI_DIV;
-        let n = self.dac(3, self.noise.value()) / NES_NOISE_DIV;
+        self.nes_tnd_mix(self.wave.u(), self.noise.value())
+    }
+
+    /// 2A03 triangle/noise group output for the unit values `ut`, `un`.
+    #[inline]
+    fn nes_tnd_mix(&self, ut: f32, un: f32) -> (f32, f32) {
+        let t = self.dac(2, ut) / NES_TRI_DIV;
+        let n = self.dac(3, un) / NES_NOISE_DIV;
         let ct = NES_T_NUM / (1.0 + 100.0 * (t + n).max(0.0));
         (ct * (t * self.kl[2] + n * self.kl[3]), ct * (t * self.kr[2] + n * self.kr[3]))
+    }
+
+    /// Expected mean (DC) of this sub-voice's output at full fade gain with the current
+    /// configuration: the channels' mean unit values through the mixer (for the non-linear
+    /// 2A03 mixer evaluated at the mean levels, a close estimate).
+    fn mean_level(&self, tab: &WaveTable) -> (f64, f64) {
+        let u = [self.pulse[0].mean_unit(), self.pulse[1].mean_unit(), self.wave.mean_unit(tab), 0.5];
+        let (l, r) = if self.nes {
+            let (pl, pr) = self.nes_pulse_mix(u[0], u[1]);
+            let (tl, tr) = self.nes_tnd_mix(u[2], u[3]);
+            (pl + tl, pr + tr)
+        } else {
+            let mut l = 0.0;
+            let mut r = 0.0;
+            for (c, u) in u.into_iter().enumerate() {
+                let d = self.dac(c, u);
+                l += d * self.kl[c];
+                r += d * self.kr[c];
+            }
+            (l, r)
+        };
+        (l as f64, r as f64)
     }
 
     /// Current stereo output of this sub-voice (what the integrator has been told).
@@ -387,9 +453,13 @@ impl SubVoice {
                 t = self.pulse[1].next_t();
                 which = 1;
             }
-            if act[2] && self.wave.next_t() < t {
-                t = self.wave.next_t();
-                which = 2;
+            let wave_id = self.wave.is_integrating();
+            if act[2] {
+                let tw = if wave_id { self.wave.next_boundary() } else { self.wave.next_t() };
+                if tw < t {
+                    t = tw;
+                    which = 2;
+                }
             }
             let id = self.noise.is_integrating();
             if act[3] {
@@ -406,11 +476,13 @@ impl SubVoice {
                     false
                 }
                 2 => {
-                    if self.wave.commit(tab) == 0.0 {
+                    let (du, raw) =
+                        if wave_id { (self.wave.boundary(tab), true) } else { (self.wave.commit(tab), false) };
+                    if du == 0.0 {
                         continue;
                     }
                     gt = self.nes_tnd_group();
-                    false
+                    raw
                 }
                 3 => {
                     let raw = if id {
@@ -438,6 +510,9 @@ impl SubVoice {
                 emit(blip, t, dl, dr);
             }
         }
+        if act[2] {
+            self.wave.finish(t_end, tab);
+        }
         if act[3] {
             self.noise.finish(t_end);
         }
@@ -455,6 +530,7 @@ impl SubVoice {
             if let Some(p) = r.wave_pos {
                 self.wave.set_position(p, at);
             }
+            self.tri_delay = r.wave_delay;
             if let Some(s) = r.lfsr {
                 self.noise.reset(s, at);
             }
@@ -521,6 +597,11 @@ impl SubVoice {
                     WaveMode::Run
                 };
                 self.wave.configure(at, 32.0 * fa / fs, 0, mode, ctx.tri);
+                if mode == WaveMode::Run {
+                    if let Some(frac) = self.tri_delay.take() {
+                        self.wave.delay_start(at + frac.clamp(0.0, 1.0) * fs / fa, ctx.tri);
+                    }
+                }
                 if res.on[2] {
                     self.g[2] = 1.0;
                     self.o[2] = if unipolar { 0.0 } else { -7.5 };
@@ -740,6 +821,14 @@ pub struct Voice {
     pub discharging: bool,
     /// Remaining discharge level per sub-voice (left, right).
     dis: [(f64, f64); MAX_UNISON],
+    /// DC bridge across a switch crossfade ([`DC_BRIDGE_TAU`]): offset currently added to the
+    /// output (left, right).
+    bridge: (f64, f64),
+    /// While a switch crossfade runs: the DC level the output holds, and the sub-voices' mean
+    /// level at full gain (the old mode's while fading out, the new mode's while fading in).
+    bridge_hold: Option<((f64, f64), (f64, f64))>,
+    /// Chunk time from which the bridge settles towards zero (after the fade-in).
+    bridge_from: f64,
     /// Next FREE-mode amplitude-only update (chunk time), `NEVER` when not needed.
     t_amp: f64,
     env: [Adsr; 4],
@@ -753,6 +842,14 @@ pub struct Voice {
     arp_c0: u64,
     arp_seed: u64,
     held_note: i16,
+    /// Chunk time of the last note event.
+    ev_t: f64,
+    /// Envelope samples (and the NES triangle gate) taken at the last note event.
+    ev_env: [f32; 4],
+    ev_tri_gate: bool,
+    /// Chip modes: ticks before this chunk time still play the note event's initial values
+    /// (the note's first frame); `-∞` when none.
+    first_until: f64,
     /// Chip configuration the voice currently renders with.
     pub cfg: ModeCfg,
     n_sub: usize,
@@ -780,6 +877,9 @@ impl Voice {
             order: 0,
             discharging: false,
             dis: [(0.0, 0.0); MAX_UNISON],
+            bridge: (0.0, 0.0),
+            bridge_hold: None,
+            bridge_from: NEVER,
             t_amp: NEVER,
             env: [Adsr::new(); 4],
             t_upd: 0.0,
@@ -792,6 +892,10 @@ impl Voice {
             arp_c0: 0,
             arp_seed: 0,
             held_note: 60,
+            ev_t: 0.0,
+            ev_env: [0.0; 4],
+            ev_tri_gate: false,
+            first_until: f64::NEG_INFINITY,
             cfg: ModeCfg::default(),
             n_sub: 1,
             sub: [SubVoice::new(); MAX_UNISON],
@@ -808,6 +912,9 @@ impl Voice {
         self.active = false;
         self.discharging = false;
         self.dis = [(0.0, 0.0); MAX_UNISON];
+        self.bridge = (0.0, 0.0);
+        self.bridge_hold = None;
+        self.bridge_from = NEVER;
         self.t_amp = NEVER;
         self.gate = false;
         self.fade = Fade::idle();
@@ -824,11 +931,61 @@ impl Voice {
         if self.discharging {
             self.dis.iter().fold((0.0, 0.0), |(l, r), d| (l + d.0, r + d.1))
         } else {
-            self.sub.iter().fold((0.0, 0.0), |(l, r), s| {
+            self.sub.iter().fold(self.bridge, |(l, r), s| {
                 let (a, b) = s.total();
                 (l + a as f64, r + b as f64)
             })
         }
+    }
+
+    /// The sub-voices' summed mean (DC) level at full fade gain.
+    fn subs_mean(&self, ctx: &Ctx<'_>) -> (f64, f64) {
+        let tab = if self.cfg.chip == ChipMode::Nes { ctx.tri } else { ctx.wave };
+        self.sub[..self.n_sub].iter().fold((0.0, 0.0), |(l, r), s| {
+            let (a, b) = s.mean_level(tab);
+            (l + a, r + b)
+        })
+    }
+
+    /// Set the DC bridge offset at chunk time `t`, emitting the change.
+    fn set_bridge(&mut self, level: (f64, f64), t: f64, blip: &mut BlipBuffer) {
+        let (dl, dr) = (level.0 - self.bridge.0, level.1 - self.bridge.1);
+        self.bridge = level;
+        emit(blip, t, dl as f32, dr as f32);
+    }
+
+    /// Let the DC bridge settle (exponentially, [`DC_BRIDGE_TAU`]) over `[0, len)` once the
+    /// switch crossfade is done, emitted as exact per-sample deltas (a slow, smooth signal).
+    pub fn bridge_run(&mut self, len: usize, fs: f64, blip: &mut BlipBuffer) {
+        if self.bridge_hold.is_some() || (self.bridge.0 == 0.0 && self.bridge.1 == 0.0) {
+            return;
+        }
+        let start = if self.bridge_from > 0.0 { self.bridge_from.ceil().min(len as f64) as usize } else { 0 };
+        let k = (-1.0 / (DC_BRIDGE_TAU * fs.max(1.0))).exp();
+        for n in start..len {
+            let (l, r) = self.bridge;
+            let (nl, nr) = (l * k, r * k);
+            if nl.abs() < DISCHARGE_FLOOR && nr.abs() < DISCHARGE_FLOOR {
+                blip.add_raw(n, -l as f32, -r as f32);
+                self.bridge = (0.0, 0.0);
+                return;
+            }
+            blip.add_raw(n, (nl - l) as f32, (nr - r) as f32);
+            self.bridge = (nl, nr);
+        }
+    }
+
+    /// A voice that stops sounding keeps its bridge offset as a discharging level.
+    fn hand_bridge_to_discharge(&mut self) {
+        let (l, r) = self.bridge;
+        if l != 0.0 || r != 0.0 {
+            self.dis[0].0 += l;
+            self.dis[0].1 += r;
+            self.discharging = true;
+        }
+        self.bridge = (0.0, 0.0);
+        self.bridge_hold = None;
+        self.bridge_from = NEVER;
     }
 
     /// Remove whatever this slot contributes with one band-limited step at chunk time 0 and
@@ -848,26 +1005,24 @@ impl Voice {
         if !self.discharging {
             return true;
         }
+        self.discharge_range(0, len, fs, blip)
+    }
+
+    fn discharge_range(&mut self, start: usize, end: usize, fs: f64, blip: &mut BlipBuffer) -> bool {
         let k = (-1.0 / (DISCHARGE_TAU * fs.max(1.0))).exp();
-        let (mut l, mut r) = self.output_level();
-        for n in 0..len {
-            let (nl, nr) = (l * k, r * k);
-            blip.add_raw(n, (nl - l) as f32, (nr - r) as f32);
-            l = nl;
-            r = nr;
-        }
-        let kn = k.powi(len as i32);
-        for d in &mut self.dis {
-            d.0 *= kn;
-            d.1 *= kn;
-        }
-        let (l, r) = self.output_level();
-        if l.abs() < DISCHARGE_FLOOR && r.abs() < DISCHARGE_FLOOR {
-            if l != 0.0 || r != 0.0 {
-                blip.add_raw(len, -l as f32, -r as f32);
+        for n in start..end {
+            let (l, r) = self.output_level();
+            for d in &mut self.dis {
+                d.0 *= k;
+                d.1 *= k;
             }
-            self.clear();
-            return true;
+            let (nl, nr) = self.output_level();
+            if nl.abs() < DISCHARGE_FLOOR && nr.abs() < DISCHARGE_FLOOR {
+                blip.add_raw(n, -l as f32, -r as f32);
+                self.clear();
+                return true;
+            }
+            blip.add_raw(n, (nl - l) as f32, (nr - r) as f32);
         }
         false
     }
@@ -1013,23 +1168,76 @@ impl Voice {
         }
         let mut rng = Rng::new(a.seed);
         let nes = self.cfg.chip == ChipMode::Nes;
-        let tri_rest = WaveOsc::triangle_rest_step(self.cfg.unipolar()) as f64;
         let mut resets = [Reset::default(); MAX_UNISON];
         for (i, r) in resets.iter_mut().enumerate() {
-            if i == 0 {
-                r.pulse_phase = Some([0.0, 0.0]);
-                // The NES triangle starts at its rest step (no DAC jump).
-                r.wave_pos = Some(if nes { tri_rest } else { 0.0 });
-                r.lfsr = Some(NoiseOsc::INITIAL);
+            *r = if i == 0 {
+                Reset {
+                    pulse_phase: Some([0.0, 0.0]),
+                    // The NES triangle starts at its rest step (no DAC jump).
+                    wave_pos: Some(if nes { self.triangle_rest() } else { 0.0 }),
+                    lfsr: Some(NoiseOsc::INITIAL),
+                    wave_delay: None,
+                }
             } else {
-                r.pulse_phase = Some([rng.next_f64(), rng.next_f64()]);
-                // The triangle has no volume control: a random start would click, so unison
-                // layers start together and drift apart by their detune.
-                r.wave_pos = Some(if nes { tri_rest } else { rng.next_f64() * 32.0 });
-                r.lfsr = Some((rng.next_u64() as u16 & 0x7fff).max(1));
-            }
+                self.fresh_layer(&mut rng)
+            };
         }
-        self.update(ctx, 0.0, a.ahead, Some(&resets), blip);
+        self.update(ctx, 0.0, a.ahead, Eval::Event, Some(&resets), blip);
+    }
+
+    /// Start position of the NES triangle for the voice's DAC polarity.
+    fn triangle_rest(&self) -> f64 {
+        WaveOsc::triangle_rest_step(self.cfg.unipolar()) as f64
+    }
+
+    /// Phase resets of a unison layer other than 0: seeded random phases (SPEC §4.7).
+    fn fresh_layer(&self, rng: &mut Rng) -> Reset {
+        let nes = self.cfg.chip == ChipMode::Nes;
+        let pulse_phase = Some([rng.next_f64(), rng.next_f64()]);
+        // The triangle has no volume control: starting on a random step would jump the DAC (a
+        // click), so its layers start on the rest step like layer 0 and wait a random fraction
+        // of a period before stepping — a random phase without a click. (Starting together,
+        // they would add up coherently: up to +4.8 dB at 3 layers.)
+        let wave_pos = Some(if nes { self.triangle_rest() } else { rng.next_f64() * 32.0 });
+        let lfsr = Some((rng.next_u64() as u16 & 0x7fff).max(1));
+        let wave_delay = if nes { Some(rng.next_f64()) } else { None };
+        Reset { pulse_phase, wave_pos, lfsr, wave_delay }
+    }
+
+    /// The unison count to use for the current parameters.
+    fn wanted_layers(res: &Resolved) -> usize {
+        res.uni_voices.clamp(1, MAX_UNISON)
+    }
+
+    /// A note retriggers or continues this voice: a changed unison count (SPEC §4.8: applies
+    /// at the next note) is adopted through the click-free switch crossfade.
+    fn follow_unison(&mut self, ctx: &Ctx<'_>) {
+        if Self::wanted_layers(ctx.res) != self.n_sub {
+            self.begin_switch(ctx.fs);
+        }
+    }
+
+    /// At the silent point of a switch crossfade: adopt the current unison count. Dropped
+    /// layers are cleared (at fade gain 0 they hold nothing), new ones start fresh at seeded
+    /// random phases, silent until the fade-in. Returns the resets for [`Self::update`].
+    fn adopt_unison(&mut self, ctx: &Ctx<'_>) -> Option<[Reset; MAX_UNISON]> {
+        let n = Self::wanted_layers(ctx.res);
+        if n == self.n_sub {
+            return None;
+        }
+        let mut rng = Rng::new(crate::modulation::mix64(self.arp_seed ^ 0x554E_4953_4F4E ^ self.order));
+        let mut resets = [Reset::default(); MAX_UNISON];
+        for s in &mut self.sub[n.min(self.n_sub)..self.n_sub] {
+            s.clear();
+        }
+        for (i, reset) in resets.iter_mut().enumerate().take(n).skip(self.n_sub) {
+            *reset = self.fresh_layer(&mut rng);
+            let s = &mut self.sub[i];
+            s.clear();
+            s.fade = 0.0;
+        }
+        self.n_sub = n;
+        Some(resets)
     }
 
     /// Retrigger a sounding voice with a new note (MONO, or the same note again in POLY):
@@ -1060,7 +1268,8 @@ impl Voice {
         for (i, r) in resets.iter_mut().enumerate() {
             r.lfsr = Some(if i == 0 { NoiseOsc::INITIAL } else { (rng.next_u64() as u16 & 0x7fff).max(1) });
         }
-        self.update(ctx, 0.0, a.ahead, Some(&resets), blip);
+        self.update(ctx, 0.0, a.ahead, Eval::Event, Some(&resets), blip);
+        self.follow_unison(ctx);
     }
 
     /// Legato note change: pitch only (and glide), no envelope or modulation restart.
@@ -1081,12 +1290,13 @@ impl Voice {
         self.order = order;
         self.gate = true;
         self.set_glide(glide_from, ctx.res);
-        self.update(ctx, 0.0, ahead, None, blip);
+        self.update(ctx, 0.0, ahead, Eval::Event, None, blip);
+        self.follow_unison(ctx);
     }
 
     /// Re-evaluate pitch (HELD arp sequence changes) at chunk time 0.
     pub fn refresh(&mut self, ahead: f64, ctx: &Ctx<'_>, blip: &mut BlipBuffer) {
-        self.update(ctx, 0.0, ahead, None, blip);
+        self.update(ctx, 0.0, ahead, Eval::Tick, None, blip);
     }
 
     /// Key released (after the sustain pedal): all envelopes enter their release.
@@ -1121,10 +1331,20 @@ impl Voice {
         }
     }
 
-    /// Chip configuration changed: fade out, switch, fade back in (no clicks or glitches).
+    /// Chip configuration (or, at a note, the unison count) changed: fade out, switch, fade
+    /// back in (no clicks or glitches).
     pub fn begin_switch(&mut self, fs: f64) {
         if !self.is_dying() {
             self.fade_to(0.0, FadeGoal::Switch, fs, 0.0);
+        }
+    }
+
+    /// Adopt a configuration that renders exactly like the current one (`analog` toggled in
+    /// FREE) without a crossfade. A pending switch adopts the engine's configuration itself.
+    pub fn adopt_equivalent_cfg(&mut self, cfg: ModeCfg) {
+        let switching = self.fade.active && self.fade.goal == FadeGoal::Switch;
+        if !switching && self.cfg.renders_like(&cfg) {
+            self.cfg = cfg;
         }
     }
 
@@ -1145,6 +1365,14 @@ impl Voice {
 
     fn fade_step(&mut self, ctx: &Ctx<'_>, blip: &mut BlipBuffer) -> VoiceEnd {
         let t = self.fade.next_t;
+        if matches!(self.fade.goal, FadeGoal::Switch | FadeGoal::Kill) && self.bridge_hold.is_none() {
+            // First step of a switch or a kill: hold the DC level the output has now (FX-03),
+            // so a steal or all-sound-off of a unipolar (analog NES/GB) voice discharges its
+            // DC smoothly instead of dropping it within the 2 ms fade (a thump).
+            let m = self.subs_mean(ctx);
+            let g = self.fade.gain as f64;
+            self.bridge_hold = Some(((self.bridge.0 + m.0 * g, self.bridge.1 + m.1 * g), m));
+        }
         self.fade.left = self.fade.left.saturating_sub(1);
         self.fade.gain = if self.fade.left == 0 {
             match self.fade.goal {
@@ -1159,16 +1387,29 @@ impl Voice {
         for s in &mut self.sub[..self.n_sub] {
             s.set_fade(g, t, blip);
         }
+        if let Some((hold, m)) = self.bridge_hold {
+            // The sub-voices' DC is `m·g`: the bridge makes up the rest of the held level.
+            let gf = g as f64;
+            self.set_bridge((hold.0 - m.0 * gf, hold.1 - m.1 * gf), t, blip);
+        }
         if self.fade.left > 0 {
             return VoiceEnd::Running;
         }
         match self.fade.goal {
             FadeGoal::Kill => {
+                // Silent apart from a bridged DC level, which discharges smoothly.
+                let bridge = self.bridge;
                 self.clear();
+                self.bridge = bridge;
+                self.hand_bridge_to_discharge();
                 VoiceEnd::Killed
             }
             FadeGoal::In => {
                 self.fade = Fade::idle();
+                if self.bridge_hold.take().is_some() {
+                    // Crossfade done: the bridge now settles to the new mode's DC.
+                    self.bridge_from = t;
+                }
                 VoiceEnd::Running
             }
             FadeGoal::Switch => {
@@ -1186,20 +1427,27 @@ impl Voice {
                         s.wave.set_position(step as f64, t);
                     }
                 }
-                self.update(ctx, t, 0.0, None, blip);
+                let resets = self.adopt_unison(ctx);
+                self.update(ctx, t, 0.0, Eval::Tick, resets.as_ref(), blip);
+                if let Some((hold, _)) = self.bridge_hold {
+                    // Fading in: the new mode's mean level replaces the old one's.
+                    self.bridge_hold = Some((hold, self.subs_mean(ctx)));
+                }
                 self.fade_to(1.0, FadeGoal::In, ctx.fs, t);
                 VoiceEnd::Running
             }
         }
     }
 
-    /// Evaluate modulation at `at` (sampled `ahead` samples later) and apply it to all
-    /// sub-voices. Returns whether all enabled channels' envelopes have finished.
+    /// Evaluate modulation at `at` (a tick samples it `ahead` samples later, a note event
+    /// applies the initial values, see the module docs) and apply it to all sub-voices.
+    /// Returns whether all enabled channels' envelopes have finished.
     fn update(
         &mut self,
         ctx: &Ctx<'_>,
         at: f64,
         ahead: f64,
+        eval: Eval,
         resets: Option<&[Reset; MAX_UNISON]>,
         blip: &mut BlipBuffer,
     ) -> bool {
@@ -1207,13 +1455,38 @@ impl Voice {
         let fs = ctx.fs;
         self.advance_to(at, res, fs);
         let ahead = if ahead.is_finite() { ahead.max(0.0) } else { 0.0 };
+        let chip = self.cfg.chip.is_chip();
         // FREE: fast envelope segments get amplitude-only micro-updates; sample the
         // amplitude at the centre of the coming micro-step so all updates agree.
         let micro = self.micro_interval(res);
-        let amp_ahead = if self.cfg.chip.is_chip() { ahead } else { ahead.min(0.5 * micro) };
+        let amp_ahead = if chip { ahead } else { ahead.min(0.5 * micro) };
         self.t_amp = if micro < FREE_CONTROL { at + micro } else { NEVER };
-        let env_s: [f32; 4] = std::array::from_fn(|c| self.env[c].peek(amp_ahead, &res.env[c]));
-        let tt = self.age + ahead;
+        let first_frame = eval == Eval::Tick && at < self.first_until;
+        // Offset (samples) at which the pitch modulators are sampled.
+        let pitch_dt = match eval {
+            Eval::Event => 0.0,
+            Eval::Tick if first_frame => self.ev_t - at,
+            Eval::Tick => ahead,
+        };
+        let (env_s, tri_gate): ([f32; 4], bool) = if first_frame {
+            (self.ev_env, self.ev_tri_gate)
+        } else {
+            let dt: [f64; 4] = std::array::from_fn(|c| match eval {
+                // Initial values: never sample past the attack peak.
+                Eval::Event => amp_ahead.min(self.env[c].time_to_peak(&res.env[c])),
+                Eval::Tick => amp_ahead,
+            });
+            let env_s = std::array::from_fn(|c| self.env[c].peek(dt[c], &res.env[c]));
+            let gate_dt = if eval == Eval::Event { dt[2] } else { ahead };
+            (env_s, res.on[2] && self.env[2].peek(gate_dt, &res.env[2]) * 15.0 >= 0.5)
+        };
+        if eval == Eval::Event {
+            self.ev_t = at;
+            self.ev_env = env_s;
+            self.ev_tri_gate = tri_gate;
+            self.first_until = if chip { at + ahead } else { f64::NEG_INFINITY };
+        }
+        let tt = self.age + pitch_dt;
 
         let sweep = if res.sweep_on {
             sweep_offset(tt, res.sweep_amt, res.sweep_time, res.sweep_dir, res.sweep_curve)
@@ -1226,8 +1499,8 @@ impl Voice {
             depth += res.vib_depth * vibrato_fade(tt, res.vib_delay, res.vib_fade);
         }
         let vib_cents =
-            if depth > 0.0 { depth * lfo(self.vib_phase + res.vib_rate * ahead / fs, res.vib_shape) } else { 0.0 };
-        let glide = glide_offset(self.glide_from, self.glide_t + ahead, self.glide_time, self.glide_curve);
+            if depth > 0.0 { depth * lfo(self.vib_phase + res.vib_rate * pitch_dt / fs, res.vib_shape) } else { 0.0 };
+        let glide = glide_offset(self.glide_from, self.glide_t + pitch_dt, self.glide_time, self.glide_curve);
         let bend = perf.bend.clamp(-1.0, 1.0) as f64 * res.pb_range;
         let (base_note, arp_off, arp_step) = self.arp(ctx);
         let tune = ctx.sm[sm::TUNE] as f64 / 100.0;
@@ -1243,7 +1516,7 @@ impl Voice {
             amp: std::array::from_fn(|c| {
                 ((ctx.sm[sm::LEVEL + c] / 15.0).clamp(0.0, 1.0) * env_s[c] * vel_gain).clamp(0.0, 1.0)
             }),
-            tri_gate: res.on[2] && self.env[2].peek(ahead, &res.env[2]) * 15.0 >= 0.5,
+            tri_gate,
             noise_mod: sweep + vib_cents / 100.0 + bend,
             uni_gain: 1.0 / (self.n_sub as f32).sqrt(),
             cfg: self.cfg,
@@ -1253,7 +1526,8 @@ impl Voice {
             let lin = if n <= 1 { 0.0 } else { -1.0 + 2.0 * i as f64 / (n - 1) as f64 };
             s.apply(&plan, lin, ctx, at, resets.map(|r| &r[i]), blip);
         }
-        (0..4).all(|c| !res.on[c] || self.env[c].is_idle())
+        // A note always plays its first frame, even if its envelopes end within it.
+        !first_frame && (0..4).all(|c| !res.on[c] || self.env[c].is_idle())
     }
 
     /// FREE mode: samples between amplitude updates that keep every envelope step below
@@ -1362,8 +1636,13 @@ impl Voice {
                 let tk = &ticks[ti];
                 ti += 1;
                 ctx = Ctx { sm: &tk.sm, arp_count: tk.arp_count, ..*base };
-                if self.update(&ctx, tk.t, tk.ahead, None, blip) {
+                if self.update(&ctx, tk.t, tk.ahead, Eval::Tick, None, blip) {
                     self.finish();
+                    // Begin on the first sample at or after the finishing tick, including
+                    // the remainder of this chunk. Host boundaries must not delay decay.
+                    if self.discharging {
+                        self.discharge_range(tk.t.ceil() as usize, end as usize, base.fs, blip);
+                    }
                     return VoiceEnd::Finished;
                 }
             }
@@ -1371,7 +1650,7 @@ impl Voice {
     }
 
     /// All enabled envelopes are done: free the voice; a level left behind (halted NES
-    /// triangle) is discharged smoothly from the next chunk on.
+    /// triangle) is discharged smoothly from the finishing tick on.
     fn finish(&mut self) {
         self.active = false;
         self.gate = false;
@@ -1389,11 +1668,15 @@ impl Voice {
             // Nothing held: the bookkeeping is (numerically) zero already.
             self.dis = [(0.0, 0.0); MAX_UNISON];
         }
+        self.hand_bridge_to_discharge();
     }
 
     /// Shift the time origin by `dt` samples (end of a chunk).
     pub fn shift_time(&mut self, dt: f64) {
         self.t_upd -= dt;
+        self.bridge_from -= dt;
+        self.ev_t -= dt;
+        self.first_until -= dt;
         if self.fade.active {
             self.fade.next_t -= dt;
         }

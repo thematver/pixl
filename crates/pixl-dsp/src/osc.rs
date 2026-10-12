@@ -28,6 +28,13 @@ pub const ID_ENTER: f64 = 8.0;
 /// rendering (hysteresis against toggling at the threshold).
 pub const ID_LEAVE: f64 = 7.0;
 
+/// Output transitions per sample above which the wave channel switches to integrate-and-dump
+/// (SPEC §4.2: "more than ~4 transitions per output sample"). Counted from the table: a step
+/// rate of `inc` steps per sample makes `inc · changes / 32` transitions per sample.
+pub const WAVE_ID_ENTER: f64 = 4.0;
+/// Transitions per sample below which an integrating wave channel returns to BLEP rendering.
+pub const WAVE_ID_LEAVE: f64 = 3.5;
+
 /// Longest LFSR run searched for the next output change before giving up (a valid, non-zero
 /// LFSR state changes its output bit within 15 clocks).
 const LFSR_SEARCH: u32 = 64;
@@ -120,6 +127,15 @@ impl PulseOsc {
     /// Cycle position (0..1) at the last update.
     pub fn phase(&self) -> f64 {
         self.pos
+    }
+
+    /// Mean unit value over a cycle: the duty while running, else the held value.
+    pub fn mean_unit(&self) -> f32 {
+        if self.running {
+            wrap(self.fall - self.rise, 1.0) as f32
+        } else {
+            self.u
+        }
     }
 
     /// Set the cycle position at time `t` (fresh voices). The output is recomputed.
@@ -226,6 +242,10 @@ pub struct WaveTable {
     next: [[u8; WAVE_LEN]; 3],
     /// Mean of the shifted values (the band-limited output of an ultrasonic wave).
     mean: [f32; 3],
+    /// `prefix[shift][k]`: sum of the first `k` shifted values (integrate-and-dump).
+    prefix: [[f32; WAVE_LEN + 1]; 3],
+    /// Number of steps whose shifted value differs from the next one (transitions per cycle).
+    changes: [u8; 3],
 }
 
 impl WaveTable {
@@ -237,14 +257,39 @@ impl WaveTable {
         }
         let mut next = [[0u8; WAVE_LEN]; 3];
         let mut mean = [0.0f32; 3];
+        let mut prefix = [[0.0f32; WAVE_LEN + 1]; 3];
+        let mut changes = [0u8; 3];
         for shift in 0..3 {
             let v = |i: usize| values[i % WAVE_LEN] >> shift;
             for (step, n) in next[shift].iter_mut().enumerate() {
                 *n = (1..=WAVE_LEN).find(|d| v(step + d) != v(step)).unwrap_or(0) as u8;
             }
             mean[shift] = (0..WAVE_LEN).map(|i| v(i) as f32).sum::<f32>() / WAVE_LEN as f32;
+            for k in 0..WAVE_LEN {
+                prefix[shift][k + 1] = prefix[shift][k] + v(k) as f32;
+            }
+            changes[shift] = (0..WAVE_LEN).filter(|i| v(*i) != v(i + 1)).count() as u8;
         }
-        Self { values, next, mean }
+        Self { values, next, mean, prefix, changes }
+    }
+
+    /// Integral of the shifted wave over step positions `0..p` (`p ≥ 0`, any number of
+    /// cycles): whole cycles, whole steps and the partial step.
+    #[inline]
+    fn integral(&self, p: f64, shift: u8) -> f64 {
+        let sh = (shift as usize).min(2);
+        let p = if p.is_finite() { p.max(0.0) } else { 0.0 };
+        let cycles = (p / WAVE_LEN as f64).floor();
+        let r = p - cycles * WAVE_LEN as f64;
+        let k = (r as usize).min(WAVE_LEN - 1);
+        let whole = self.prefix[sh][WAVE_LEN] as f64;
+        cycles * whole + self.prefix[sh][k] as f64 + (r - k as f64) * self.value(k, shift) as f64
+    }
+
+    /// Output transitions per cycle of the shifted wave.
+    #[inline]
+    pub fn changes(&self, shift: u8) -> u8 {
+        self.changes[(shift as usize).min(2)]
     }
 
     /// Shifted 4-bit value of a step.
@@ -297,6 +342,12 @@ pub struct WaveOsc {
     u: f32,
     next_t: f64,
     next_step: u8,
+    // integrate-and-dump (SPEC §4.2), like the noise channel
+    id: bool,
+    acc: f64,
+    t_acc: f64,
+    next_n: f64,
+    shown: f32,
 }
 
 impl Default for WaveOsc {
@@ -335,13 +386,35 @@ impl WaveOsc {
             u: 0.0,
             next_t: NEVER,
             next_step: 0,
+            id: false,
+            acc: 0.0,
+            t_acc: 0.0,
+            next_n: 1.0,
+            shown: 0.0,
         }
     }
 
-    /// Current unit value.
+    /// The unit value the mixer currently sees: the instantaneous step value, or the last
+    /// interval average while integrating.
     #[inline]
     pub fn u(&self) -> f32 {
-        self.u
+        if self.id {
+            self.shown
+        } else {
+            self.u
+        }
+    }
+
+    /// Whether the channel currently renders with integrate-and-dump.
+    #[inline]
+    pub fn is_integrating(&self) -> bool {
+        self.id
+    }
+
+    /// Next sample boundary at which an integrating channel emits.
+    #[inline]
+    pub fn next_boundary(&self) -> f64 {
+        self.next_n
     }
 
     /// Time of the next output change.
@@ -361,6 +434,15 @@ impl WaveOsc {
         self.pos
     }
 
+    /// Mean unit value over a cycle of `tab`: the table mean while stepping, else the held or
+    /// static value.
+    pub fn mean_unit(&self, tab: &WaveTable) -> f32 {
+        match self.mode {
+            WaveMode::Run if self.inc > MIN_INC => tab.mean(self.shift),
+            _ => self.u,
+        }
+    }
+
     /// Park the sequencer on `step` (held, silent until the next `configure`). Used when a
     /// voice slot is cleaned: the NES triangle then restarts from its zero step.
     pub fn park(&mut self, step: u8) {
@@ -370,6 +452,8 @@ impl WaveOsc {
         self.mode = WaveMode::Hold;
         self.u = 0.0;
         self.next_t = NEVER;
+        self.id = false;
+        self.shown = 0.0;
     }
 
     /// Set the step position at time `t` without changing the mode. Callers re-`configure`
@@ -396,15 +480,24 @@ impl WaveOsc {
         self.next_step = ((self.step as usize + d as usize) % WAVE_LEN) as u8;
     }
 
-    /// Re-anchor at time `t` with a new rate (steps/sample), volume shift and mode.
+    /// Re-anchor at time `t` with a new rate (steps/sample), volume shift and mode. An
+    /// integrating channel is first integrated up to `t` with the old settings.
     pub fn configure(&mut self, t: f64, inc: f64, shift: u8, mode: WaveMode, tab: &WaveTable) {
+        if self.id {
+            self.sync_window(t, tab);
+        }
+        // A delayed start ([`Self::delay_start`]) still pending: the sequencer keeps waiting on
+        // its step until then (at the new rate afterwards).
+        let waiting = self.mode == WaveMode::Run && mode == WaveMode::Run && self.t_pos > t;
         let dt = (t - self.t_pos).max(0.0);
         if self.mode != WaveMode::Hold {
             // The sequencer was moving: latch the step it has reached.
             self.pos = wrap(self.pos + dt * self.inc, WAVE_LEN as f64);
             self.step = (self.pos as usize).min(WAVE_LEN - 1) as u8;
         }
-        self.t_pos = t;
+        if !waiting {
+            self.t_pos = t;
+        }
         self.inc = sane_inc(inc);
         self.inv_inc = if self.inc > MIN_INC { 1.0 / self.inc } else { 0.0 };
         self.shift = shift.min(2);
@@ -417,6 +510,110 @@ impl WaveOsc {
             WaveMode::Static(v) => {
                 self.u = if v.is_finite() { v } else { 0.0 };
                 self.next_t = NEVER;
+            }
+        }
+        // Integrate-and-dump while the wave makes more than ~4 transitions per sample.
+        let per_sample = self.inc * tab.changes(self.shift) as f64 / WAVE_LEN as f64;
+        let want_id =
+            mode == WaveMode::Run && if self.id { per_sample >= WAVE_ID_LEAVE } else { per_sample > WAVE_ID_ENTER };
+        if want_id {
+            self.next_t = NEVER;
+            if !self.id {
+                // The mixer keeps seeing the current step until the first window closes.
+                self.id = true;
+                self.shown = self.u;
+                self.restart_window(t);
+                self.acc = self.u as f64 * (self.t_acc - (self.next_n - 1.0));
+            }
+        } else if self.id {
+            // Back to stepping: the mixer sees the instantaneous value again (the caller emits
+            // the change of its total).
+            self.id = false;
+        }
+    }
+
+    /// Step position at time `t` (unwrapped; constant before a delayed start).
+    #[inline]
+    fn position_at(&self, t: f64) -> f64 {
+        self.pos + (t - self.t_pos).max(0.0) * self.inc
+    }
+
+    /// Integrate-and-dump: add the integral of the output from `t_acc` to `to`.
+    #[inline]
+    fn advance_id(&mut self, to: f64, tab: &WaveTable) {
+        let from = self.t_acc;
+        // `partial_cmp` keeps NaN times out: anything but a strictly later `to` is a no-op.
+        if to.partial_cmp(&from) != Some(std::cmp::Ordering::Greater) {
+            return;
+        }
+        // Waiting for a delayed start: the current step's value until `t_pos`.
+        let wait = (to.min(self.t_pos) - from).max(0.0);
+        let mut area = wait * self.u as f64;
+        let run_from = from.max(self.t_pos);
+        if to > run_from && self.inc > MIN_INC {
+            let (p0, p1) = (self.position_at(run_from), self.position_at(to));
+            area += (tab.integral(p1, self.shift) - tab.integral(p0, self.shift)) * self.inv_inc;
+        }
+        self.acc += area;
+        self.t_acc = to;
+    }
+
+    /// Integrate-and-dump: close the window ending at [`Self::next_boundary`]; returns the
+    /// change of the emitted value.
+    #[inline]
+    pub fn boundary(&mut self, tab: &WaveTable) -> f32 {
+        let n = self.next_n;
+        self.advance_id(n, tab);
+        let avg = self.acc.clamp(0.0, 15.0) as f32;
+        self.acc = 0.0;
+        self.next_n = n + 1.0;
+        let d = avg - self.shown;
+        self.shown = avg;
+        d
+    }
+
+    /// Integrate-and-dump: integrate the partial window up to `t_end` (no emission).
+    #[inline]
+    pub fn finish(&mut self, t_end: f64, tab: &WaveTable) {
+        if self.id {
+            self.advance_id(t_end, tab);
+        }
+    }
+
+    /// Integrate-and-dump: a fresh window at `t` (nothing accumulated, the next boundary is
+    /// the next sample boundary). The emitted value is unchanged.
+    #[inline]
+    fn restart_window(&mut self, t: f64) {
+        self.acc = 0.0;
+        self.t_acc = if t.is_finite() { t } else { 0.0 };
+        self.next_n = self.t_acc.floor() + 1.0;
+    }
+
+    /// Integrate-and-dump: bring the window to `t` — integrate the rendered partial window,
+    /// or restart it if the channel was not rendered (an idle voice slot whose times kept
+    /// shifting): bounded work however long the gap (SPEC §0).
+    fn sync_window(&mut self, t: f64, tab: &WaveTable) {
+        let valid = self.t_acc.is_finite()
+            && self.t_acc <= t
+            && self.t_acc >= t - 1.0
+            && self.next_n >= self.t_acc
+            && self.next_n - 1.0 <= self.t_acc;
+        if valid && t <= self.next_n {
+            self.advance_id(t, tab);
+        } else {
+            self.restart_window(t);
+        }
+    }
+
+    /// Delayed start: a running sequencer waits on its current step until time `t` and only
+    /// then starts stepping (a later `configure` keeps the wait; `set_position`, a halt or a
+    /// static mode cancel it). Unison layers of the volume-less NES triangle use it to start at
+    /// a random phase without a DAC jump (SPEC §4.3/§4.7). Ignored unless running.
+    pub fn delay_start(&mut self, t: f64, tab: &WaveTable) {
+        if self.mode == WaveMode::Run && t.is_finite() && t > self.t_pos {
+            self.t_pos = t;
+            if !self.id {
+                self.schedule(tab);
             }
         }
     }
@@ -443,9 +640,24 @@ impl WaveOsc {
         du
     }
 
-    /// Render all changes before `t_end`.
+    /// Render everything before `t_end` (band-limited steps, or integrate-and-dump windows).
     #[inline]
     pub fn run(&mut self, t_end: f64, al: f32, ar: f32, tab: &WaveTable, blip: &mut BlipBuffer) {
+        if self.id {
+            if !(self.next_n >= self.t_acc && self.next_n - 1.0 <= self.t_acc && self.t_acc >= -1.0) {
+                // Defensive, like the noise channel: never walk a stale window sample by sample.
+                self.restart_window(self.t_acc.clamp(0.0, t_end.max(0.0)));
+            }
+            while self.next_n < t_end {
+                let n = self.next_n;
+                let d = self.boundary(tab);
+                if d != 0.0 {
+                    blip.add_raw(n.max(0.0) as usize, d * al, d * ar);
+                }
+            }
+            self.advance_id(t_end, tab);
+            return;
+        }
         while self.next_t < t_end {
             let t = self.next_t;
             let du = self.commit(tab);
@@ -460,6 +672,8 @@ impl WaveOsc {
     pub fn shift_time(&mut self, dt: f64) {
         self.t_pos -= dt;
         self.next_t -= dt;
+        self.t_acc -= dt;
+        self.next_n -= dt;
     }
 }
 
@@ -642,15 +856,17 @@ impl NoiseOsc {
     /// Load the register (note-on) at time `t`. A zero state (which would lock up) becomes the
     /// power-on value.
     pub fn reset(&mut self, state: u16, t: f64) {
+        if self.id {
+            // Close the integration up to `t` with the old register (or restart the window if
+            // the channel was not rendered); the interval average accumulated so far stays.
+            self.sync_window(t);
+        }
         let s = state & 0x7fff;
         self.lfsr = if s == 0 { Self::INITIAL } else { s };
         self.elapsed = 0.0;
         self.t_pos = t;
         self.u = Self::bit_u(self.lfsr);
         if self.id {
-            // Integration continues from `t` with the new register; the interval average
-            // already accumulated stays.
-            self.t_acc = t;
             self.next_t = NEVER;
         } else {
             self.find_change();
@@ -658,19 +874,52 @@ impl NoiseOsc {
         }
     }
 
+    /// Integrate-and-dump: whether the window state is consistent at time `t`, i.e. the
+    /// channel was integrated up to `t` (`t_acc` lies within one sample before `t`) and the
+    /// pending boundary closes the interval containing `t_acc`.
+    #[inline]
+    fn window_valid(&self, t: f64) -> bool {
+        self.t_acc.is_finite()
+            && self.next_n.is_finite()
+            && self.t_acc <= t
+            && self.t_acc >= t - 1.0
+            && self.next_n >= self.t_acc
+            && self.next_n - 1.0 <= self.t_acc
+    }
+
+    /// Integrate-and-dump: bring the integration window to time `t`.
+    ///
+    /// A channel that was rendered up to `t` simply continues (the partial interval is
+    /// integrated). A channel that was not rendered — a voice slot that sat idle while the
+    /// engine shifted its time origin chunk after chunk, or a muted channel — restarts the
+    /// window at `t`: the skipped time produced no output, so there is nothing to catch up.
+    /// Either way the work is bounded (real-time safe, SPEC §0), however long the gap.
+    fn sync_window(&mut self, t: f64) {
+        if self.window_valid(t) && t <= self.next_n {
+            if self.t_acc < t {
+                self.advance_id(t);
+            }
+        } else {
+            self.restart_window(t);
+            // The caller (a note-on or re-configuration) emits the change of the mixer's view.
+            self.shown = self.u;
+        }
+    }
+
+    /// Integrate-and-dump: start a fresh integration window at `t` (nothing accumulated, the
+    /// next boundary is the next sample boundary). The emitted value (`shown`) is unchanged.
+    #[inline]
+    fn restart_window(&mut self, t: f64) {
+        self.acc = 0.0;
+        self.t_acc = if t.is_finite() { t } else { 0.0 };
+        self.next_n = self.t_acc.floor() + 1.0;
+    }
+
     /// Re-anchor at time `t` with a new clock rate (clocks/sample) and register mode. When
     /// integrating, the caller should have integrated up to `t` (see [`Self::run`]).
     pub fn configure(&mut self, t: f64, inc: f64, nes: bool, short: bool) {
         if self.id {
-            if self.t_acc < t - 1.0 || !self.t_acc.is_finite() {
-                // The channel was silent (not rendered): restart the integration window.
-                self.acc = 0.0;
-                self.t_acc = t;
-                self.next_n = t.floor() + 1.0;
-                self.shown = self.u;
-            } else if self.t_acc < t {
-                self.advance_id(t);
-            }
+            self.sync_window(t);
             // While integrating, `elapsed` is the phase inside the current clock and `lfsr`
             // the current register, so a mode change simply continues with the new feedback.
             self.nes = nes;
@@ -803,6 +1052,14 @@ impl NoiseOsc {
     #[inline]
     pub fn run(&mut self, t_end: f64, al: f32, ar: f32, blip: &mut BlipBuffer) {
         if self.id {
+            if !(self.t_acc >= -1.0 && self.next_n >= self.t_acc && self.next_n - 1.0 <= self.t_acc) {
+                // Defensive: `configure`/`reset` restart stale windows, but a window left behind
+                // by an unrendered stretch (times are chunk-relative, so a rendered channel
+                // never lags more than a sample behind the chunk start) must never make the
+                // loop below iterate over the stale time. The emitted value stays as it is, so
+                // the integrator bookkeeping is untouched.
+                self.restart_window(self.t_acc.clamp(0.0, t_end.max(0.0)));
+            }
             while self.next_n < t_end {
                 let n = self.next_n;
                 let d = self.boundary();
@@ -943,6 +1200,79 @@ mod tests {
                 s[i] = got;
             }
         }
+    }
+
+    #[test]
+    fn fast_wave_integrates_and_dumps() {
+        // SPEC §4.2 (DSP-07): above ~4 transitions per sample the wave channel averages each
+        // sample interval instead of emitting up to 16 band-limited steps per sample.
+        let alt: WaveRam = std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 15 });
+        let tab = WaveTable::new(&alt);
+        assert_eq!(tab.changes(0), 32);
+        let mut w = WaveOsc::new();
+        w.set_position(0.0, 0.0);
+        w.configure(0.0, 3.9 / 1.0, 0, WaveMode::Run, &tab); // 3.9 transitions per sample
+        assert!(!w.is_integrating());
+        w.configure(0.0, 8.0, 0, WaveMode::Run, &tab); // 8 steps = 8 transitions per sample
+        assert!(w.is_integrating());
+        let mut b = BlipBuffer::new(64);
+        let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+        w.run(64.0, 1.0, 1.0, &tab, &mut b);
+        w.finish(64.0, &tab);
+        b.read(&mut l, &mut r);
+        // Every whole sample interval averages 0 and 15 equally: exactly 7.5.
+        assert!(l[2..].iter().all(|v| (*v - 7.5).abs() < 1e-4), "{:?}", &l[..8]);
+        // Hysteresis: stays integrating down to 3.5 transitions per sample.
+        w.configure(64.0, 3.7, 0, WaveMode::Run, &tab);
+        assert!(w.is_integrating());
+        w.configure(64.0, 3.4, 0, WaveMode::Run, &tab);
+        assert!(!w.is_integrating());
+        // An idle (unrendered) channel restarts its window instead of walking the gap.
+        w.configure(64.0, 8.0, 0, WaveMode::Run, &tab);
+        for _ in 0..45_000 {
+            w.shift_time(64.0);
+        }
+        w.configure(0.0, 8.0, 0, WaveMode::Run, &tab);
+        assert!((0.0..=1.0).contains(&w.next_boundary()), "{}", w.next_boundary());
+        // Smooth tables integrate exactly too: a constant wave gives its value.
+        let flat = WaveTable::new(&[9; 32]);
+        let mut w = WaveOsc::new();
+        w.configure(0.0, 12.0, 0, WaveMode::Run, &flat);
+        let mut b = BlipBuffer::new(64);
+        w.run(64.0, 1.0, 1.0, &flat, &mut b);
+        b.read(&mut l, &mut r);
+        assert!(l.iter().all(|v| v.abs() < 1e-6), "a constant wave makes no transitions: never integrating");
+        assert!(!w.is_integrating());
+    }
+
+    #[test]
+    fn integrate_and_dump_window_survives_long_idle() {
+        // SPEC §0: a slot idle for minutes (the engine shifts its time origin every chunk)
+        // must restart its integration window on reuse instead of walking every idle sample.
+        let mut n = NoiseOsc::new();
+        n.reset(NoiseOsc::INITIAL, 0.0);
+        n.configure(0.0, 9.3, true, false);
+        assert!(n.is_integrating());
+        let mut b = BlipBuffer::new(64);
+        n.run(64.0, 0.1, 0.1, &mut b);
+        for _ in 0..45_000 {
+            n.shift_time(64.0); // 60 s at 48 kHz, not rendered
+        }
+        n.reset(0x1234, 0.0);
+        assert!((0.0..=1.0).contains(&n.next_boundary()), "window restarted: {}", n.next_boundary());
+        n.configure(0.0, 9.3, true, false);
+        assert!((0.0..=1.0).contains(&n.next_boundary()));
+        let mut l = [0.0f32; 64];
+        let mut r = [0.0f32; 64];
+        b.read(&mut l, &mut r);
+        n.run(64.0, 0.1, 0.1, &mut b);
+        assert_eq!(n.next_boundary(), 64.0, "exactly one boundary per sample");
+        // Even without a reset, a stale window is never walked sample by sample.
+        for _ in 0..45_000 {
+            n.shift_time(64.0);
+        }
+        n.run(64.0, 0.1, 0.1, &mut b);
+        assert!((63.0..=64.0).contains(&n.next_boundary()), "{}", n.next_boundary());
     }
 
     #[test]

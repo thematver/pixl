@@ -4,9 +4,10 @@ Only what the generator needs: stable keys, kinds, ranges, skews, defaults and t
 `modulatable` flag, plus the normalization / macro maths of `pixl-core`, reproduced exactly
 so that the generator can compute macro depths and the sound a preset makes at load time.
 
-If the Rust table changes, update this file. `cargo test -p pixl-core` (tests/factory_library.rs)
-fails when the library no longer lists every parameter or a value no longer parses cleanly,
-so a stale mirror cannot go unnoticed.
+If the Rust table changes, update this file and rerun generate.py. A stale mirror cannot go
+unnoticed: generate.py writes `table_listing()` to tools/presets/param_table.txt, and
+`cargo test -p pixl-core` (tests/factory_library.rs) rebuilds the same listing from
+`pixl_core::PARAMS` / `pixl_core::macros` and requires the two to be identical.
 """
 
 import math
@@ -159,7 +160,7 @@ FACTORY_DEFAULT_MACROS = [
     [("sweep_amt", 0.10), ("uni_detune", -0.10)],
     [("crush_bits", -0.40), ("uni_detune", 0.20)],
     [("vib_depth", 0.30), ("glide_time", 0.20)],
-    [("uni_width", 0.40), ("echo_mix", 0.50)],
+    [("uni_width", 0.40), ("echo_mix", 0.50), ("wv_release", 0.15)],
 ]
 
 
@@ -181,12 +182,16 @@ def to_plain(key, value):
 
 
 def sanitize(key, plain):
+    """ParamSpec::sanitize: clamp, snap discrete kinds (half away from zero); non-finite -> default."""
     spec = SPECS[key]
+    if not math.isfinite(plain):
+        return spec.default
     v = min(max(plain, spec.lo), spec.hi)
     return v if spec.kind == "float" else float(round_half_away(v))
 
 
 def normalize(key, plain):
+    """ParamSpec::normalize (nih-plug FloatRange::Skewed): ((v - min) / (max - min)) ** skew."""
     spec = SPECS[key]
     v = sanitize(key, plain)
     lin = (v - spec.lo) / (spec.hi - spec.lo)
@@ -196,8 +201,9 @@ def normalize(key, plain):
 
 
 def denormalize(key, norm):
+    """ParamSpec::denormalize: inverse skew, then sanitize (snaps Int/Enum/Bool)."""
     spec = SPECS[key]
-    n = min(max(norm, 0.0), 1.0)
+    n = min(max(norm, 0.0), 1.0) if math.isfinite(norm) else normalize(key, spec.default)
     lin = n ** (1.0 / spec.skew) if (spec.kind == "float" and spec.skew != 1.0) else n
     return sanitize(key, spec.lo + lin * (spec.hi - spec.lo))
 
@@ -215,3 +221,47 @@ def apply_macros(base, macro_values, routings):
     for key, off in offsets.items():
         out[key] = denormalize(key, normalize(key, base[key]) + off)
     return out
+
+
+# ------------------------------------------------------------------------------------------
+# Canonical listing (checked against the Rust table by crates/pixl-core/tests/factory_library.rs)
+# ------------------------------------------------------------------------------------------
+
+
+def listing_number(x):
+    """Six-decimal rendering without trailing zeros, identical to the Rust test's formatter."""
+    s = "%.6f" % float(x)
+    s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
+def table_listing():
+    """Every fact of the mirror the generator depends on, one per line, in table order."""
+    lines = [
+        "# The PIXL parameter table as mirrored by tools/presets/pixl_params.py.",
+        "# Written by tools/presets/generate.py; crates/pixl-core/tests/factory_library.rs",
+        "# rebuilds this listing from pixl_core::PARAMS and requires it to be identical.",
+    ]
+    for spec in PARAMS:
+        fields = [
+            "param",
+            spec.key,
+            spec.group.replace(" ", "_"),
+            spec.kind,
+            listing_number(spec.lo),
+            listing_number(spec.hi),
+            listing_number(spec.skew if spec.kind == "float" else 1.0),
+            listing_number(spec.default),
+            "mod" if spec.modulatable else "fixed",
+        ]
+        if spec.kind == "enum":
+            fields.append("|".join(spec.variants))
+        lines.append(" ".join(fields))
+    lines.append("macro_count %d" % MACRO_COUNT)
+    lines.append("macro_slots %d" % MACRO_SLOTS)
+    lines.append("min_depth %s" % listing_number(MIN_DEPTH))
+    lines.append("macro_names %s" % " ".join(MACRO_NAMES))
+    for m, slots in enumerate(FACTORY_DEFAULT_MACROS):
+        for key, depth in slots:
+            lines.append("factory_default %d %s %s" % (m, key, listing_number(depth)))
+    return "\n".join(lines) + "\n"

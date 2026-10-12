@@ -8,7 +8,27 @@
 //! tails gate off like on real low-resolution hardware instead of turning into a buzz.
 //! Fractional bit depths are supported (`bits = 3.5` → Δ = 0.177, 11 levels) so macro sweeps
 //! move continuously; for integer depths the level count is exactly `2^bits`
-//! (1 bit = {−1, 0}, 2 bits = {−1, −½, 0, ½}, …). The output never leaves `[-1, 1]`.
+//! (2 bits = {−1, −½, 0, ½}, …).
+//!
+//! **Relative to the signal's tracked level.** NES/GB with `analog` on feed unipolar DAC
+//! levels (several channels reach +2…+4) and the crusher runs before the DC-removing chip
+//! filter, so a converter range fixed at `[−1, 1)` would clip them even at 16 bits. Each
+//! channel therefore tracks its input range `[lo, hi]` (instant attack, release towards the
+//! input with a 5 Hz one-pole, [`TRACK_HZ`]) and the converter's `±1` window is centred on the
+//! grid level nearest to the range centre `m = (hi + lo)/2`. The levels themselves stay on the
+//! fixed grid `code · Δ`, so silence is still exactly zero and a moving reference never adds
+//! steps of its own; only signals whose swing around their centre exceeds `±1` are clamped
+//! (like any signal in FREE). Crush at 16 bits is transparent for every chip signal.
+//!
+//! **Below 2 bits** the mid-tread quantizer is crossfaded (weight `2 − bits`) into a symmetric
+//! mid-rise *sign* quantizer around the range centre, `m ± Δ/2`, so 1 bit is a square of
+//! `±Δ/2` — the harshest setting — and never silence (a 1-bit mid-tread converter has only
+//! the levels {−1, 0} and would swallow every signal that stays above −½). Two refinements
+//! keep it clean: the square never exceeds the input's own range (`±min(Δ/2, half-range)`),
+//! so a unipolar note ends exactly at its rest level instead of being pushed below it (no
+//! thump), and within 1/16 of the half-range around the centre ([`SIGN_SOFT`]) the sign is
+//! linear, so decaying tails and rounding noise fade out instead of turning into
+//! full-scale noise.
 //!
 //! ## Sample-and-hold
 //! A fractional phase accumulator (f64) clocks the hold at `crush_rate` Hz with sub-sample
@@ -45,27 +65,69 @@ pub const MIN_BITS: f32 = 1.0;
 pub const MAX_BITS: f32 = 16.0;
 /// Lowest accepted hold rate (Hz).
 pub const MIN_RATE: f32 = 100.0;
+/// Release of the per-channel range tracker that centres the quantizer (Hz, one-pole).
+pub const TRACK_HZ: f32 = 5.0;
+/// Width of the linear zone of the sign quantizer, as a fraction of the half-range.
+pub const SIGN_SOFT: f32 = 1.0 / 16.0;
 
-/// Mid-tread quantizer with `2^bits` levels (see the module docs). `bits` is clamped to
-/// `1..=16`; non-finite input yields 0.
+/// The plain mid-tread converter curve with `2^bits` levels around a zero reference (see the
+/// module docs): what the crusher applies to a signal centred on zero at 2 bits or more.
+/// `bits` is clamped to `1..=16`; non-finite input yields 0.
 #[inline]
 pub fn quantize(x: f32, bits: f32) -> f32 {
-    let bits = if bits.is_finite() { bits.clamp(MIN_BITS, MAX_BITS) } else { MAX_BITS };
-    let s = (bits - 1.0).exp2();
-    quantize_scaled(x, s, 1.0 / s)
-}
-
-/// Quantizer core with precomputed `s = 2^(bits−1)` and `inv_s = 1/s`.
-#[inline]
-fn quantize_scaled(x: f32, s: f32, inv_s: f32) -> f32 {
     if !x.is_finite() {
         return 0.0;
     }
-    let lo = -s.floor();
-    let hi = s.ceil() - 1.0;
-    let code = (x * s).round().clamp(lo, hi);
+    let q = Levels::new(bits);
     // `+ 0.0` turns a rounded −0.0 into +0.0 so silence is bit-exact zero.
-    (code * inv_s).clamp(-1.0, 1.0) + 0.0
+    (x * q.s).round().clamp(q.lo, q.hi) * q.inv_s + 0.0
+}
+
+/// A bit depth prepared for quantization (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Levels {
+    /// `S = 2^(bits−1)`.
+    s: f32,
+    /// `Δ = 1/S`.
+    inv_s: f32,
+    /// Code range around the reference code: `−floor(S) ..= ceil(S) − 1`.
+    lo: f32,
+    hi: f32,
+    /// Weight of the sign quantizer (`2 − bits`, clamped to `0..=1`).
+    sign: f32,
+}
+
+impl Levels {
+    #[inline]
+    fn new(bits: f32) -> Self {
+        let bits = if bits.is_finite() { bits.clamp(MIN_BITS, MAX_BITS) } else { MAX_BITS };
+        let s = (bits - 1.0).exp2();
+        Self { s, inv_s: 1.0 / s, lo: -s.floor(), hi: s.ceil() - 1.0, sign: (2.0 - bits).clamp(0.0, 1.0) }
+    }
+}
+
+/// Quantizes `x` relative to an input range `[lo, hi]` (see the module docs): mid-tread on
+/// the fixed grid with its `±1` window centred on the grid level nearest to the range centre,
+/// crossfaded below 2 bits into a sign quantizer around the centre. Non-finite input yields
+/// the centre.
+#[inline]
+fn quantize_tracked(x: f32, q: &Levels, lo: f32, hi: f32) -> f32 {
+    let m = 0.5 * (hi + lo);
+    if !x.is_finite() {
+        return m;
+    }
+    let centre = (m * q.s).round();
+    let code = (x * q.s).round().clamp(centre + q.lo, centre + q.hi);
+    // `+ 0.0` turns a rounded −0.0 into +0.0 so silence is bit-exact zero.
+    let tread = code * q.inv_s + 0.0;
+    if q.sign <= 0.0 {
+        return tread;
+    }
+    let half = 0.5 * (hi - lo);
+    let amp = (0.5 * q.inv_s).min(half);
+    let sign = if half > 0.0 { ((x - m) / (SIGN_SOFT * half)).clamp(-1.0, 1.0) } else { 0.0 };
+    let rise = m + sign * amp;
+    tread + q.sign * (rise - tread)
 }
 
 /// Number of distinct output levels of [`quantize`] for a bit depth.
@@ -83,11 +145,14 @@ struct HoldState {
     held: f32,
     /// Pending band-limited step residuals, indexed by absolute sample position.
     ring: [f32; RING_LEN],
+    /// Tracked input range (instant attack, [`TRACK_HZ`] release towards the input).
+    lo: f32,
+    hi: f32,
 }
 
 impl Default for HoldState {
     fn default() -> Self {
-        Self { hist: [0.0; 3], held: 0.0, ring: [0.0; RING_LEN] }
+        Self { hist: [0.0; 3], held: 0.0, ring: [0.0; RING_LEN], lo: 0.0, hi: 0.0 }
     }
 }
 
@@ -96,6 +161,28 @@ impl HoldState {
     #[inline]
     fn push(&mut self, x: f32) {
         self.hist = [self.hist[1], self.hist[2], x];
+    }
+
+    /// Updates the range tracker with a new input sample (`k` = release coefficient).
+    #[inline]
+    fn track(&mut self, x: f32, k: f32) {
+        if !x.is_finite() {
+            return;
+        }
+        self.hi = if x >= self.hi { x } else { self.hi + k * (x - self.hi) };
+        self.lo = if x <= self.lo { x } else { self.lo + k * (x - self.lo) };
+    }
+
+    /// Restarts the range tracker from the input history (waking from bypass).
+    fn restart_tracker(&mut self) {
+        let [a, b, c] = self.hist;
+        self.hi = a.max(b).max(c);
+        self.lo = a.min(b).min(c);
+    }
+
+    #[inline]
+    fn quantize(&self, x: f32, q: &Levels) -> f32 {
+        quantize_tracked(x, q, self.lo, self.hi)
     }
 }
 
@@ -125,8 +212,16 @@ pub struct Crusher {
     pos: usize,
     ch: [HoldState; 2],
     blep: &'static MinBlep,
+    /// Release coefficient of the range trackers (per sample).
+    track_k: f32,
     /// Number of hold clock ticks since reset (diagnostics/tests).
     ticks: u64,
+}
+
+/// Per-sample release coefficient of a [`TRACK_HZ`] one-pole at `fs`.
+fn track_coefficient(fs: f32) -> f32 {
+    let fs = if fs.is_finite() && fs > 0.0 { fs } else { 48_000.0 };
+    1.0 - (-2.0 * std::f32::consts::PI * TRACK_HZ / fs).exp()
 }
 
 impl Crusher {
@@ -143,6 +238,7 @@ impl Crusher {
             pos: 0,
             ch: [HoldState::default(); 2],
             blep: MinBlep::get(),
+            track_k: track_coefficient(fs),
             ticks: 0,
         }
     }
@@ -150,6 +246,7 @@ impl Crusher {
     /// Updates the sample rate (keeps state).
     pub fn set_sample_rate(&mut self, fs: f32) {
         self.fs = fs;
+        self.track_k = track_coefficient(fs);
         self.mix.set_sample_rate(fs);
         self.rate.set_sample_rate(fs);
         self.bits.set_sample_rate(fs);
@@ -165,9 +262,11 @@ impl Crusher {
             self.bits.reset_to(bits);
             self.rate.reset_to(rate);
             self.phase = 0.0;
+            let q = Levels::new(bits);
             for c in &mut self.ch {
                 c.ring = [0.0; RING_LEN];
-                c.held = quantize(c.hist[2], bits);
+                c.restart_tracker();
+                c.held = c.quantize(c.hist[2], &q);
             }
         }
         self.enabled = on;
@@ -210,6 +309,7 @@ impl Crusher {
         }
         let fs = self.fs as f64;
         let blep = self.blep;
+        let k = self.track_k;
         for i in 0..n {
             let wet_gain = self.mix.next_value();
             let bits = self.bits.next_value();
@@ -220,10 +320,10 @@ impl Crusher {
             if inc >= 1.0 {
                 // Quantize only: the hold clock runs at or above the sample rate.
                 self.phase = 0.0;
-                let s = (bits - 1.0).exp2();
-                let inv_s = 1.0 / s;
+                let q = Levels::new(bits);
                 for (c, st) in self.ch.iter_mut().enumerate() {
-                    st.held = quantize_scaled(st.hist[2], s, inv_s);
+                    st.held = st.quantize(st.hist[2], &q);
+                    st.track(x[c], k);
                     st.push(x[c]);
                     // Residuals of steps rendered before the switch still play out.
                     y[c] = st.held + st.ring[pos];
@@ -240,18 +340,18 @@ impl Crusher {
                 // Distance from the tick to output sample i, in [0, 1).
                 let x0 = (1.0 - tau) as f32;
                 let u = tau as f32;
-                let (s, inv_s) = if tick {
+                let q = if tick {
                     self.ticks = self.ticks.wrapping_add(1);
-                    let s = (bits - 1.0).exp2();
-                    (s, 1.0 / s)
+                    Some(Levels::new(bits))
                 } else {
-                    (1.0, 1.0)
+                    None
                 };
                 for (c, st) in self.ch.iter_mut().enumerate() {
-                    if tick {
+                    st.track(x[c], k);
+                    if let Some(q) = &q {
                         let [a, b, d] = st.hist;
                         let sampled = lagrange4(a, b, d, x[c], u);
-                        let new = quantize_scaled(sampled, s, inv_s);
+                        let new = st.quantize(sampled, q);
                         let h = new - st.held;
                         if h != 0.0 {
                             blep.add_step(&mut st.ring, pos, x0, h);
@@ -496,6 +596,134 @@ mod tests {
                 assert!(y.is_finite() && y.abs() <= 1.6, "{y}");
             }
             t += 64;
+        }
+    }
+
+    /// A unipolar "chip" signal: two DAC pulses (0..0.8 each, 220 / 331 Hz) summed, like a
+    /// two-channel NES/GB patch with `analog` on (range 0..1.6).
+    fn unipolar_chord(n: usize, fs: f64) -> Vec<f32> {
+        let pulse = |f: f64, i: usize, duty: f64| if (f * i as f64 / fs).fract() < duty { 0.8f32 } else { 0.0 };
+        (0..n).map(|i| pulse(220.0, i, 0.5) + pulse(331.0, i, 0.25)).collect()
+    }
+
+    fn rms(x: &[f32]) -> f64 {
+        (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len().max(1) as f64).sqrt()
+    }
+
+    #[test]
+    fn sixteen_bits_are_transparent_for_unipolar_chip_signals() {
+        // SPEC §5.2 (FX-01): NES/GB with `analog` on feed unipolar DAC levels well above +1
+        // into the crusher (it runs before the DC-removing chip filter). Quantization is
+        // relative to the tracked signal level, so 16 bits never clip them — from the very
+        // first sample of a note after silence, with or without the sample-and-hold.
+        let fs = 48_000.0;
+        let n = 24_000;
+        let mut x = vec![0.0f32; 480];
+        x.extend(unipolar_chord(n, fs));
+        for rate in [48_000.0f32, 11_025.0] {
+            let mut c = settled(fs as f32, 16.0, rate);
+            let mut l = x.clone();
+            let mut r = x.clone();
+            c.process(&mut l, &mut r);
+            let (dry, wet) = (rms(&x[480..]), rms(&l[481..]));
+            let db = 20.0 * (wet / dry).log10();
+            assert!(db.abs() < 0.1, "rate {rate}: crush at 16 bits changes the level by {db:.2} dB");
+            let peak = l.iter().fold(0.0f32, |m, v| m.max(*v));
+            assert!(peak > 1.55, "rate {rate}: the 1.6 peaks are clipped ({peak})");
+            if rate >= 48_000.0 {
+                // Quantize only: the input delayed by one sample, to 16-bit accuracy.
+                let err = l[1..].iter().zip(&x).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+                assert!(err <= 1.0 / 65_536.0 + 1e-6, "max error {err}");
+            }
+        }
+        // Switching crush on and off while the chord plays: during the 10 ms crossfades the
+        // output only blends the dry sample with the one-sample-late wet one (no clipped
+        // level, no click).
+        let mut c = Crusher::new(fs as f32);
+        let mut prev = 0.0f32;
+        for (b, chunk) in x.chunks(64).enumerate() {
+            c.set_params((100..250).contains(&b), 16.0, 48_000.0);
+            let mut l = chunk.to_vec();
+            let mut r = chunk.to_vec();
+            c.process(&mut l, &mut r);
+            for (i, y) in l.iter().enumerate() {
+                let before = if i == 0 { prev } else { chunk[i - 1] };
+                let (lo, hi) = (before.min(chunk[i]), before.max(chunk[i]));
+                assert!(*y >= lo - 2e-5 && *y <= hi + 2e-5, "block {b} sample {i}: {y} outside [{lo}, {hi}]");
+            }
+            prev = chunk[chunk.len() - 1];
+        }
+        // Silence stays exactly silent, before and after the notes.
+        let mut c = settled(fs as f32, 4.0, 48_000.0);
+        let mut l = x.clone();
+        l.extend(vec![0.0f32; 9_600]);
+        let mut r = l.clone();
+        c.process(&mut l, &mut r);
+        assert!(l[..480].iter().all(|v| *v == 0.0));
+        assert!(l[l.len() - 4_800..].iter().all(|v| *v == 0.0), "quantization residue in the silence after the notes");
+    }
+
+    #[test]
+    fn one_bit_is_a_square_never_silence() {
+        // SPEC §5.2 (FX-02): below 2 bits the mid-tread quantizer (1 bit = {−1, 0}, which turns
+        // anything that stays above −½ into silence) crossfades into a sign quantizer, so 1 bit
+        // is a ±Δ/2 square — for bipolar and unipolar signals alike.
+        let fs = 48_000.0f64;
+        let n = 48_000;
+        let sine = |a: f64| (0..n).map(|i| (a * (2.0 * PI * 440.0 * i as f64 / fs).sin()) as f32).collect::<Vec<_>>();
+        let crush = |x: &[f32], bits: f32| {
+            let mut c = settled(fs as f32, bits, 48_000.0);
+            let mut l = x.to_vec();
+            let mut r = x.to_vec();
+            c.process(&mut l, &mut r);
+            rms(&l[4_800..])
+        };
+        let s = sine(0.4);
+        let one = crush(&s, 1.0);
+        // A square at the sine's peak level (±Δ/2 = ±½ is capped to the input's own range).
+        assert!(one > 0.37, "±0.4 sine at 1 bit: RMS {one}");
+        // Louder at lower depths over whole bits; between 1 and 2 bits the crossfade never
+        // falls more than 3 dB below the 2-bit level (before: silence from 1.32 bits down).
+        let levels: Vec<f64> = (0..=16).map(|k| crush(&s, 1.0 + k as f32 / 8.0)).collect();
+        println!("±0.4 sine RMS over 1..3 bits in 1/8 steps: {levels:.3?}");
+        assert!(levels[0] > levels[8] && levels[8] > levels[16], "{levels:?}");
+        assert!(levels[..=8].iter().all(|v| *v > 0.7 * levels[8]), "{levels:?}");
+        // A unipolar chip signal (and a quiet one) at 1 bit: a square around its centre.
+        let u = unipolar_chord(n, fs);
+        let du = crush(&u, 1.0);
+        assert!(du > 0.3, "unipolar chord at 1 bit: AC RMS {du}");
+        let quiet = sine(0.05);
+        assert!(crush(&quiet, 1.0) > 0.04);
+    }
+
+    #[test]
+    fn low_bit_tails_end_without_thumps_or_noise() {
+        // A unipolar note that stops (the DAC returns to 0), and a bipolar note whose release
+        // decays into rounding noise: at 1–2 bits the output must settle smoothly to silence,
+        // never jump to a held offset or turn the residue into a full-scale buzz.
+        let fs = 48_000.0f64;
+        let n = 19_200;
+        let mut uni = unipolar_chord(n, fs);
+        uni.extend(vec![0.0f32; 24_000]);
+        let mut bip: Vec<f32> = (0..n)
+            .map(|i| {
+                let env = 1.0 - i as f64 / n as f64;
+                (0.6 * env * (2.0 * PI * 330.0 * i as f64 / fs).sin()) as f32
+            })
+            .collect();
+        bip.extend((0..24_000).map(|i| if i % 2 == 0 { 1e-7 } else { -1e-7 }));
+        for bits in [1.0f32, 1.5, 2.0] {
+            for (name, x) in [("unipolar", &uni), ("bipolar", &bip)] {
+                let mut c = settled(fs as f32, bits, 48_000.0);
+                let mut l = x.clone();
+                let mut r = x.clone();
+                c.process(&mut l, &mut r);
+                let tail = &l[n + 2..];
+                let jump = tail.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+                assert!(jump < 0.02, "{name} at {bits} bits: step of {jump} after the note");
+                let last = tail[tail.len() - 4_800..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                assert!(last < 1e-4, "{name} at {bits} bits: {last} left after 0.4 s of silence");
+            }
         }
     }
 }

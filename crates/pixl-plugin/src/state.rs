@@ -20,21 +20,20 @@
 //! state the current preset was loaded or saved with (the *baseline*) and compares the live
 //! state against it, so undoing a change also clears the dot.
 
+use crate::handover::{ContextSink, EditorLoads, ParamSink, PresetMailbox};
 use crate::params::PixlParams;
 use crate::presets::{factory_library, init_meta, PresetMeta};
-use nih_plug::prelude::PluginState;
+use nih_plug::prelude::{GuiContext, PluginState};
 use nih_plug::wrapper::state::ParamValue;
 use parking_lot::Mutex;
 use pixl_core::bridge::CurrentPreset;
 use pixl_core::preset::{json_to_plain, PresetState};
 use pixl_core::sync::{AtomicMacros, AtomicTelemetry, AtomicWave};
 use pixl_core::wave::{self, WaveRam, WAVE_LEN, WAVE_MAX};
-use pixl_core::{Category, MacroAssignments, ParamId, ParamKind, ParamValues, UiState, MACRO_COUNT, PARAMS, VERSION};
+use pixl_core::{Category, MacroAssignments, ParamId, ParamKind, ParamValues, UiState, MACRO_COUNT, PARAMS};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::OnceLock;
-use std::time::Instant;
+use std::sync::Weak;
 
 /// Persistent field key: wave RAM.
 pub const FIELD_WAVE: &str = "wave";
@@ -55,9 +54,10 @@ pub const MAX_UI_SCALE: f32 = 2.0;
 
 /// State shared between the audio thread, the host callbacks and the editor.
 ///
-/// Audio-thread data (wave, macros, telemetry, runtime status) is lock-free. Preset
-/// metadata and UI state are only touched from the main thread and from state restores, so
-/// they use short `Mutex` critical sections that never contain I/O.
+/// Audio-thread data (wave, macros, telemetry, the preset mailbox) is lock-free. Preset
+/// metadata, UI state and the editor's load bookkeeping are only touched from the main thread
+/// (editor calls and host state save/load), so they use short `Mutex` critical sections that
+/// never contain I/O and are never taken on the audio thread.
 pub struct SharedState {
     /// Wave RAM (GUI writes, audio reads by version).
     pub wave: AtomicWave,
@@ -65,16 +65,18 @@ pub struct SharedState {
     pub macros: AtomicMacros,
     /// Meters and voice data published by the audio thread.
     pub telemetry: AtomicTelemetry,
-    /// Activation / audio-thread liveness (used to decide how presets are applied).
-    pub runtime: RuntimeStatus,
-    /// What the header shows, plus the baseline used for the modified flag.
+    /// Editor preset loads on their way to the audio thread (see [`crate::handover`]).
+    pub mailbox: PresetMailbox,
+    /// What the header shows, plus the baseline used for the modified flag (the committed
+    /// state: it always matches the parameters nih-plug holds).
     pub(crate) preset: Mutex<PresetMeta>,
-    /// A preset the editor asked to load that the wrapper has not applied yet.
-    pub(crate) pending_preset: Mutex<Option<CurrentPreset>>,
     /// Editor state.
     pub(crate) ui: Mutex<UiState>,
-    /// Serializes read-modify-write cycles on `macros` from the editor.
-    pub(crate) macro_edit: Mutex<()>,
+    /// The editor's preset loads and parameter gestures in flight.
+    pub(crate) loads: Mutex<EditorLoads>,
+    /// The open editor's host context (weak: the instance must never keep it alive), used to
+    /// queue parameter changes when a host state load overrides editor changes in flight.
+    pub(crate) editor: Mutex<Option<Weak<dyn GuiContext>>>,
 }
 
 impl SharedState {
@@ -85,11 +87,11 @@ impl SharedState {
             wave: AtomicWave::new(wave::default_wave()),
             macros: AtomicMacros::new(&MacroAssignments::factory_default()),
             telemetry: AtomicTelemetry::default(),
-            runtime: RuntimeStatus::default(),
+            mailbox: PresetMailbox::new(),
             preset: Mutex::new(meta),
-            pending_preset: Mutex::new(None),
             ui: Mutex::new(UiState::default()),
-            macro_edit: Mutex::new(()),
+            loads: Mutex::new(EditorLoads::new()),
+            editor: Mutex::new(None),
         }
     }
 
@@ -110,59 +112,13 @@ impl Default for SharedState {
     }
 }
 
-/// Liveness of the plugin's audio processing, written by the audio thread.
-#[derive(Default)]
-pub struct RuntimeStatus {
-    /// Between `initialize()` and `deactivate()`.
-    active: AtomicBool,
-    /// Monotonic nanoseconds (since [`epoch`]) of the last `process()` call, 0 = never.
-    last_process_ns: AtomicU64,
-}
-
-/// Process-wide monotonic epoch for [`RuntimeStatus`]. Initialized off the audio thread
-/// (first call happens when an instance is created).
-pub(crate) fn epoch() -> Instant {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    *EPOCH.get_or_init(Instant::now)
-}
-
-impl RuntimeStatus {
-    /// Mark the plugin activated or deactivated.
-    pub fn set_active(&self, active: bool) {
-        self.active.store(active, Ordering::Release);
-        if !active {
-            self.last_process_ns.store(0, Ordering::Release);
-        }
-    }
-
-    /// Whether the plugin is activated.
-    pub fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
-    }
-
-    /// Record a `process()` call. Real-time safe (`Instant::now` is a vDSO/commpage read).
-    pub fn mark_processed(&self) {
-        let ns = epoch().elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        self.last_process_ns.store(ns.max(1), Ordering::Release);
-    }
-
-    /// Whether `process()` ran within `window_ms` milliseconds.
-    pub fn processed_within(&self, window_ms: u64) -> bool {
-        let last = self.last_process_ns.load(Ordering::Acquire);
-        if last == 0 {
-            return false;
-        }
-        let now = epoch().elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        now.saturating_sub(last) <= window_ms.saturating_mul(1_000_000)
-    }
-}
-
 // ---------------------------------------------------------------------------------------
 // Snapshots and the modified flag
 // ---------------------------------------------------------------------------------------
 
-/// The complete sound-defining state of an instance right now (unmodulated parameters,
-/// wave RAM, macro routings).
+/// The committed sound-defining state of an instance (the unmodulated parameters nih-plug
+/// holds, the shared wave RAM and macro routings) — what a project save stores. Editor
+/// changes still in flight are not included (see [`crate::handover`]).
 pub fn current_state(params: &PixlParams) -> PresetState {
     let mut macros = params.shared.macros.load();
     macros.sanitize();
@@ -202,19 +158,19 @@ impl PresetMeta {
     }
 }
 
-/// What the header pill shows right now.
+/// What the header pill shows right now: the editor's view, i.e. a preset the editor asked to
+/// load is shown at once, before the host has applied it.
 pub fn current_preset(params: &PixlParams) -> CurrentPreset {
-    if let Some(pending) = params.shared.pending_preset.lock().clone() {
-        return pending;
-    }
-    let current = current_state(params);
-    let meta = params.shared.preset.lock();
+    let shared = &params.shared;
+    let loads = shared.loads.lock();
+    let meta = loads.view_meta(shared);
+    let state = loads.view_state(shared, params);
     CurrentPreset {
-        id: meta.id.clone(),
-        name: meta.name.clone(),
+        modified: meta.is_modified(&state),
+        id: meta.id,
+        name: meta.name,
         category: meta.category,
         number: meta.number,
-        modified: meta.is_modified(&current),
     }
 }
 
@@ -232,32 +188,36 @@ pub struct PresetMetaRepr {
     pub modified: bool,
 }
 
-/// Serialize the persistent fields (called by nih-plug when the host saves state).
+/// Serialize the persistent fields (called by nih-plug when the host saves state, right after
+/// it read the parameter values).
+///
+/// Stores the committed state: the wave RAM, macros and header metadata that belong to the
+/// parameter values nih-plug holds. An editor preset load whose parameter changes the host has
+/// not applied yet is not part of it (the project then stores the previous preset, whole and
+/// correctly labelled); one that has been applied is installed first.
 pub fn serialize_fields(params: &PixlParams) -> BTreeMap<String, String> {
     let shared = &params.shared;
+    shared.loads.lock().promote(shared, params);
+    let current = current_state(params);
     let mut out = BTreeMap::new();
-    out.insert(FIELD_WAVE.to_string(), wave_to_json(&shared.wave.load()));
-    let mut macros = shared.macros.load();
-    macros.sanitize();
-    out.insert(FIELD_MACROS.to_string(), macros_to_json(&macros));
-    let current = current_preset(params);
-    let repr = PresetMetaRepr {
-        id: current.id,
-        name: current.name,
-        category: current.category,
-        number: current.number,
-        modified: current.modified,
+    out.insert(FIELD_WAVE.to_string(), wave_to_json(&current.wave));
+    out.insert(FIELD_MACROS.to_string(), macros_to_json(&current.macros));
+    let repr = {
+        let meta = shared.preset.lock();
+        meta.to_repr(meta.is_modified(&current))
     };
     out.insert(FIELD_PRESET.to_string(), meta_to_json(&repr));
     out.insert(FIELD_UI.to_string(), ui_to_json(&shared.ui_state()));
     out
 }
 
-/// Restore the persistent fields (called by nih-plug after the parameters were restored,
-/// possibly on the audio thread at the end of a processing cycle).
+/// Restore the persistent fields (called by nih-plug during a host state load, after the
+/// parameters were restored; on the host's main thread — PIXL never asks nih-plug to restore a
+/// state from the editor, so this never runs on the audio thread).
 ///
 /// Missing keys leave the current value untouched (the wrapper always passes all keys
 /// after [`filter_state`]); unparseable values fall back to the fresh-instance default.
+/// Editor preset loads still in flight are cancelled ([`EditorLoads::cancel`]).
 pub fn deserialize_fields(params: &PixlParams, fields: &BTreeMap<String, String>) {
     let shared = &params.shared;
     if let Some(json) = fields.get(FIELD_WAVE) {
@@ -276,8 +236,10 @@ pub fn deserialize_fields(params: &PixlParams, fields: &BTreeMap<String, String>
         let current = current_state(params);
         let meta = PresetMeta::restored(repr, &current);
         *shared.preset.lock() = meta;
-        *shared.pending_preset.lock() = None;
     }
+    let context = shared.editor.lock().as_ref().and_then(Weak::upgrade);
+    let sink = context.as_deref().map(|context| ContextSink { context, params });
+    shared.loads.lock().cancel(shared, params, sink.as_ref().map(|s| s as &dyn ParamSink));
 }
 
 impl PresetMeta {
@@ -342,24 +304,6 @@ pub fn default_fields() -> BTreeMap<String, String> {
     out.insert(FIELD_PRESET.to_string(), meta_to_json(&init_meta().to_repr(false)));
     out.insert(FIELD_UI.to_string(), ui_to_json(&UiState::default()));
     out
-}
-
-/// Build the complete nih-plug state for loading a preset through
-/// `GuiContext::set_state`: all parameters, wave, macros, preset metadata (unmodified) and
-/// the *current* UI state (loading a preset must not change the editor layout).
-pub fn plugin_state_for_preset(preset: &PresetState, meta: &PresetMetaRepr, ui: &UiState) -> PluginState {
-    let params = PARAMS
-        .iter()
-        .map(|spec| (spec.key.to_string(), plain_to_param_value(spec.id, preset.values.get(spec.id))))
-        .collect();
-    let mut macros = preset.macros;
-    macros.sanitize();
-    let mut fields = BTreeMap::new();
-    fields.insert(FIELD_WAVE.to_string(), wave_to_json(&preset.wave));
-    fields.insert(FIELD_MACROS.to_string(), macros_to_json(&macros));
-    fields.insert(FIELD_PRESET.to_string(), meta_to_json(meta));
-    fields.insert(FIELD_UI.to_string(), ui_to_json(ui));
-    PluginState { version: VERSION.to_string(), params, fields }
 }
 
 /// Plain values stored in a nih-plug state (missing or invalid entries take defaults).
@@ -626,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_state_for_preset_contains_everything() {
+    fn complete_host_state_restores_fields_and_filtering_is_the_identity() {
         let mut values = ParamValues::defaults();
         values.set(ParamId::Chip, 2.0);
         values.set(ParamId::P2On, 1.0);
@@ -634,17 +578,23 @@ mod tests {
         values.set(ParamId::ArpChord, 5.0);
         let mut macros = MacroAssignments::empty();
         macros.set(1, ParamId::CrushRate, -0.5);
-        let preset = PresetState { values, wave: wave::triangle(), macros };
         let meta = PresetMetaRepr {
             id: Some("factory:042".into()),
             name: "Test".into(),
             category: Category::Bass,
             number: 42,
-            modified: false,
+            modified: true,
         };
         let ui = UiState { scale: 1.25, ..UiState::default() };
-        let state = plugin_state_for_preset(&preset, &meta, &ui);
-        assert_eq!(state.params.len(), PARAMS.len());
+        let mut state = PluginState {
+            version: pixl_core::VERSION.to_string(),
+            params: PARAMS.iter().map(|s| (s.key.to_string(), plain_to_param_value(s.id, values.get(s.id)))).collect(),
+            fields: BTreeMap::new(),
+        };
+        state.fields.insert(FIELD_WAVE.to_string(), wave_to_json(&wave::triangle()));
+        state.fields.insert(FIELD_MACROS.to_string(), macros_to_json(&macros));
+        state.fields.insert(FIELD_PRESET.to_string(), meta_to_json(&meta));
+        state.fields.insert(FIELD_UI.to_string(), ui_to_json(&ui));
         assert_eq!(values_from_plugin_state(&state), values);
         let p = PixlParams::new();
         deserialize_fields(&p, &state.fields);
@@ -720,17 +670,56 @@ mod tests {
         assert_eq!(clean_name(&long).chars().count(), MAX_NAME_CHARS);
     }
 
+    /// Records gestures; never applies them (a host that does not process).
+    struct IdleHost(std::cell::RefCell<Vec<String>>);
+
+    impl ParamSink for IdleHost {
+        fn begin(&self, id: ParamId) {
+            self.0.borrow_mut().push(format!("begin {}", id.key()));
+        }
+        fn set(&self, id: ParamId, _plain: f32) {
+            self.0.borrow_mut().push(format!("set {}", id.key()));
+        }
+        fn end(&self, id: ParamId) {
+            self.0.borrow_mut().push(format!("end {}", id.key()));
+        }
+    }
+
     #[test]
-    fn runtime_status_tracks_liveness() {
-        let r = RuntimeStatus::default();
-        assert!(!r.is_active());
-        assert!(!r.processed_within(1000));
-        r.set_active(true);
-        r.mark_processed();
-        assert!(r.is_active());
-        assert!(r.processed_within(1000));
-        r.set_active(false);
-        assert!(!r.processed_within(1000));
+    fn a_save_while_an_editor_load_is_pending_stores_the_previous_preset_whole() {
+        // PLG-04 (SPEC §8): the user loads "Bass X" from the editor on a track the host does not
+        // render and saves the project at once. The parameters are still the old ones, so the
+        // project must store the old preset's sound *and* name, unmodified; the header already
+        // shows the new preset.
+        let p = PixlParams::new();
+        let host = IdleHost(Default::default());
+        let mut values = ParamValues::defaults();
+        values.set(ParamId::Chip, 0.0);
+        values.set(ParamId::P1On, 1.0);
+        let target = PresetState { values, wave: wave::saw(), macros: MacroAssignments::empty() };
+        let meta = PresetMeta {
+            id: Some("user:Bass X".into()),
+            name: "Bass X".into(),
+            category: Category::Bass,
+            number: 0,
+            baseline: Some(target.clone()),
+            modified_fallback: false,
+        };
+        p.shared.loads.lock().request(&p.shared, &p, &host, target, meta);
+        assert_eq!(host.0.borrow().len(), 6, "chip and p1_on were sent to the host");
+        let header = current_preset(&p);
+        assert_eq!((header.name.as_str(), header.modified), ("Bass X", false));
+        let saved = serialize_fields(&p);
+        let repr: Value = serde_json::from_str(&saved[FIELD_PRESET]).unwrap();
+        assert_eq!(repr["name"], "Hyrule Fanfare");
+        assert_eq!(repr["modified"], false);
+        assert_eq!(wave_from_json(&saved[FIELD_WAVE]), Some(wave::default_wave()));
+        assert_eq!(macros_from_json(&saved[FIELD_MACROS]), Some(MacroAssignments::factory_default()));
+        // Reopening that project: the old preset, unmodified, exactly as it sounded.
+        let q = PixlParams::new();
+        deserialize_fields(&q, &saved);
+        let reopened = current_preset(&q);
+        assert_eq!((reopened.name.as_str(), reopened.modified), ("Hyrule Fanfare", false));
     }
 
     impl PixlParams {

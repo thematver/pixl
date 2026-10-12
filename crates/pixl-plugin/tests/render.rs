@@ -99,16 +99,45 @@ fn max_diff(a: &Render, b: &Render) -> f32 {
 #[test]
 fn host_block_size_does_not_change_the_sound() {
     let total = secs(SR, 1.6);
-    // Engine, crusher, chip filters, output stage: identical up to float rounding for any
-    // segmentation (nih-plug splits host blocks at every automation event).
+    // Engine, chip filters, output stage: identical up to float rounding for any segmentation
+    // (nih-plug splits host blocks at every automation event).
     let mut no_echo = busy_state();
     no_echo.values.set(ParamId::EchoOn, 0.0);
-    let reference = Session::new(&no_echo, SR).render(&busy_phrase(), total, 64);
+    let mut clean = no_echo.clone();
+    clean.values.set(ParamId::CrushOn, 0.0);
+    let reference = Session::new(&clean, SR).render(&busy_phrase(), total, 64);
     assert!(reference.peak() > 0.05);
+    for block in [1usize, 7, 63, 100, 333, 512, 4096] {
+        let r = Session::new(&clean, SR).render(&busy_phrase(), total, block);
+        let diff = max_diff(&reference, &r);
+        assert!(diff <= 1e-5, "host block {block}: output differs by {diff:e} from 64-sample blocks");
+    }
+    // With the crusher on, the same: a quantizer is discontinuous, so a rounding difference
+    // that happens to straddle a decision threshold flips that one code (one step Δ for one
+    // hold period, ≈ 1.2 Δ with the band-limited step's overshoot) — but never more, and only
+    // in isolated places. Anything systematic (hold-clock phase, smoothing, event timing)
+    // would show up as many or larger differences.
+    let mut s = Session::new(&no_echo, SR);
+    let reference = s.render(&busy_phrase(), total, 64);
+    let step = 2f32.powf(1.0 - s.processor.effective_values().get(ParamId::CrushBits));
+    let energy = |x: &[f32]| x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>();
+    let signal = energy(&reference.left) + energy(&reference.right);
     for block in [1usize, 7, 63, 100, 333, 512, 4096] {
         let r = Session::new(&no_echo, SR).render(&busy_phrase(), total, block);
         let diff = max_diff(&reference, &r);
-        assert!(diff <= 1e-5, "host block {block}: output differs by {diff:e} from 64-sample blocks");
+        assert!(diff <= 1.5 * step, "host block {block}: crushed output differs by {diff:e} (step {step:e})");
+        let error: f64 = reference
+            .left
+            .iter()
+            .zip(&r.left)
+            .chain(reference.right.iter().zip(&r.right))
+            .map(|(a, b)| ((a - b) as f64).powi(2))
+            .sum();
+        let ratio = 10.0 * (error / signal).max(1e-30).log10();
+        assert!(
+            ratio < -60.0,
+            "host block {block}: crushed output differs by {ratio:.1} dB (more than isolated flips)"
+        );
     }
     // With the echo on, its internal 32 kHz grid may restart at a different phase when it
     // wakes, so repeats can differ in fine detail (mostly near the 14-16 kHz band edge), but
@@ -412,6 +441,28 @@ fn all_sound_off_and_all_notes_off() {
 }
 
 #[test]
+fn all_sound_off_does_not_thump_in_the_analog_chip_modes() {
+    // SPEC §4.7/§4.8: cutting voices (all-sound-off, stealing) is click-free in every mode. With
+    // `analog` on, NES/GB voices carry the unipolar DAC's DC; dropping it within the 2 ms kill
+    // fade made the chip high-pass ring at almost full scale (0.97 in GB). The voice's DC is
+    // held through the fade and discharged smoothly instead.
+    let s = |t: f32| secs(SR, t);
+    for (chip, ch, limit) in [(1.0, Channel::Wave, 0.15), (1.0, Channel::P1, 0.15), (0.0, Channel::P1, 0.03)] {
+        let mut st = clean_patch(chip, ch);
+        st.values.set(ParamId::Analog, 1.0);
+        let mut ev = vec![on(0, 48, 1.0), on(0, 55, 1.0), on(0, 60, 1.0)];
+        ev.extend(midi(s(0.3), cc(120, 0)));
+        let r = Session::new(&st, SR).render(&ev, s(1.5), 512);
+        let window = |a: f32, b: f32| peak(&r.left[s(a)..s(b)]).max(peak(&r.right[s(a)..s(b)]));
+        assert!(window(0.1, 0.3) > 0.5, "chip {chip} {ch:?}: the chord plays");
+        let thump = window(0.303, 0.35);
+        assert!(thump < limit, "chip {chip} {ch:?}: {thump} left after all-sound-off");
+        // The discharge itself is subsonic (100 ms time constant) and fades out completely.
+        assert!(window(1.0, 1.5) < 1e-4, "chip {chip} {ch:?}: the discharge ends");
+    }
+}
+
+#[test]
 fn macros_reach_the_effect_chain() {
     // Factory routing: macro 4 (SPACE) → echo_mix +0.5, uni_width +0.4.
     let mut st = init_state();
@@ -443,6 +494,119 @@ fn macros_reach_the_effect_chain() {
     s.values.set(ParamId::Macro1, 100.0);
     s.render(&[], 256, 256);
     assert!((s.processor.effective_values().get(ParamId::OutGain) + 24.0).abs() < 1e-3);
+}
+
+#[test]
+fn crush_at_16_bits_is_transparent_on_the_init_patch() {
+    // SPEC §5.2 (FX-01): the init patch (GB, `analog` on) feeds unipolar DAC levels into the
+    // crusher; a chord reaches well above +1 there. At 16 bits / 48 kHz the crusher must be
+    // transparent (its wet path is one sample late), not clip the chord.
+    let chord = [on(0, 60, 0.9), on(0, 64, 0.9), on(0, 67, 0.9)];
+    let render = |crush: bool| {
+        let mut st = init_state();
+        st.values.set(ParamId::CrushOn, if crush { 1.0 } else { 0.0 });
+        st.values.set(ParamId::CrushBits, 16.0);
+        st.values.set(ParamId::CrushRate, 48_000.0);
+        Session::new(&st, SR).render(&chord, secs(SR, 1.0), 256).mono()
+    };
+    let (dry, wet) = (render(false), render(true));
+    let (a, b) = (secs(SR, 0.1), secs(SR, 1.0));
+    let level = db(rms(&wet[a..b]) / rms(&dry[a..b]));
+    assert!(level.abs() < 0.1, "crush at 16 bits changes the chord's level by {level:.2} dB");
+    let err = wet[a..b].iter().zip(&dry[a - 1..b - 1]).fold(0.0f32, |m, (w, d)| m.max((w - d).abs()));
+    assert!(err < 2e-4, "crush at 16 bits distorts the chord (max deviation {err:e})");
+}
+
+#[test]
+fn dirt_macro_never_silences_the_crusher() {
+    // SPEC §5.2 (FX-02): the factory DIRT macro lowers crush_bits to 1 bit at full travel.
+    // 1 bit is the harshest setting (a square), not silence: the level must not collapse
+    // anywhere along the macro (before: −10.9 dB at 80 %, −71.6 dB at 100 %).
+    let level = |dirt: f32| {
+        let mut st = init_state();
+        st.values.set(ParamId::CrushOn, 1.0);
+        st.values.set(ParamId::Macro2, dirt);
+        let r = Session::new(&st, SR).render(&[on(0, 60, 0.9)], secs(SR, 0.8), 256);
+        db(rms(&r.mono()[secs(SR, 0.2)..secs(SR, 0.8)]))
+    };
+    let levels: Vec<f32> = [0.0, 30.0, 60.0, 80.0, 90.0, 100.0].iter().map(|d| level(*d)).collect();
+    println!("DIRT 0/30/60/80/90/100 %: {levels:.1?} dB");
+    assert!(levels.iter().all(|l| *l > -30.0), "{levels:?}");
+    assert!((levels[5] - levels[3]).abs() < 6.0, "1 bit vs 80 %: {levels:?}");
+}
+
+/// Second-order (RBJ) filter section for the low-frequency transient measurements.
+struct Biquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Biquad {
+    fn new(sr: f32, f0: f64, high_pass: bool) -> Self {
+        let w = std::f64::consts::TAU * f0 / sr as f64;
+        let alpha = w.sin() / std::f64::consts::SQRT_2;
+        let c = w.cos();
+        let a0 = 1.0 + alpha;
+        let b = if high_pass {
+            [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0]
+        } else {
+            [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0]
+        };
+        Self { b: b.map(|v| v / a0), a: [-2.0 * c / a0, (1.0 - alpha) / a0], z: [0.0; 2] }
+    }
+
+    fn run(&mut self, x: f64) -> f64 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+}
+
+/// The part of `x` an ear hears as a thump: 15–150 Hz (2nd-order high-pass, 4th-order
+/// low-pass), i.e. without the steady tone above it and the inaudible drift below.
+fn thump_band(x: &[f32], sr: f32) -> Vec<f32> {
+    let mut f = [Biquad::new(sr, 15.0, true), Biquad::new(sr, 150.0, false), Biquad::new(sr, 150.0, false)];
+    x.iter().map(|v| f.iter_mut().fold(*v as f64, |s, b| b.run(s)) as f32).collect()
+}
+
+#[test]
+fn chip_mode_and_analog_switches_do_not_thump() {
+    // SPEC §4.8/§5.3 (FX-03): switching between the bipolar (FREE, analog off) and unipolar
+    // (NES/GB with analog on) DAC changes the signal's DC level. Inside the engine's 2 + 2 ms
+    // switch crossfade that DC step turned into a low thump behind the HPFs (≈ 12 % of the
+    // signal's peak). The engine now bridges each voice's DC level across the crossfade and lets
+    // it settle slowly; the chip filter releases its high-pass gradually when switching to none.
+    let s = |t: f32| secs(SR, t);
+    let cases: [(&str, f32, f32, f32, f32); 6] = [
+        ("FREE → GB", 2.0, 1.0, 1.0, 1.0),
+        ("GB → FREE", 1.0, 1.0, 2.0, 1.0),
+        ("GB analog off → on", 1.0, 0.0, 1.0, 1.0),
+        ("FREE → NES", 2.0, 1.0, 0.0, 1.0),
+        ("NES → GB", 0.0, 1.0, 1.0, 1.0),
+        ("NES analog on → off", 0.0, 1.0, 0.0, 0.0),
+    ];
+    for (name, chip0, analog0, chip1, analog1) in cases {
+        let mut st = clean_patch(chip0, Channel::P1);
+        st.values.set(ParamId::P1Level, 10.0);
+        st.values.set(ParamId::Analog, analog0);
+        let mut session = Session::new(&st, SR);
+        let a = session.render(&[on(0, 72, 0.9)], s(0.5), 64);
+        session.values.set(ParamId::Chip, chip1);
+        session.values.set(ParamId::Analog, analog1);
+        let b = session.render(&[], s(0.5), 64);
+        let x: Vec<f32> = a.mono().into_iter().chain(b.mono()).collect();
+        let band = thump_band(&x, SR);
+        let before = peak(&band[s(0.3)..s(0.5)]);
+        let after = peak(&band[s(0.5)..s(0.8)]);
+        let level = peak(&x[s(0.3)..s(0.5)]).max(peak(&x[s(0.8)..]));
+        println!("{name}: 15–150 Hz band {before:.4} before, {after:.4} after the switch (signal peak {level:.2})");
+        // `before` is the tone's own leakage into the band; the switch may add at most 3 % of
+        // the signal's peak (before: 25–37 %).
+        assert!(after - before < 0.03 * level, "{name}: thump of {after:.4} against a signal peak of {level:.2}");
+        assert!(rms(&b.mono()[s(0.1)..]) > 0.05, "{name}: sounds after the switch");
+    }
 }
 
 #[test]

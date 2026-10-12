@@ -56,9 +56,11 @@ impl MacroAssignments {
         // 3 MOTION
         a.set(2, ParamId::VibDepth, 0.30);
         a.set(2, ParamId::GlideTime, 0.20);
-        // 4 SPACE
+        // 4 SPACE (the wave release makes it audible with the echo off and on GB, whose
+        // hard L/C/R panning ignores the unison width)
         a.set(3, ParamId::UniWidth, 0.40);
         a.set(3, ParamId::EchoMix, 0.50);
+        a.set(3, ParamId::WvRelease, 0.15);
         a
     }
 

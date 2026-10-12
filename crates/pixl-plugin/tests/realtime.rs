@@ -1,8 +1,10 @@
 //! Real-time safety of the audio path (SPEC §0): once prepared, everything the plugin does in
-//! `process()` — reading the host parameters, mapping MIDI, picking up wave/macro edits,
-//! macro modulation, the engine, the effect chain, telemetry publishing, and the
-//! re-`prepare`/`reset` nih-plug performs after a state load — runs without a single heap
-//! allocation or deallocation, for any parameters, events and block sizes.
+//! `process()` — reading the host parameters, mapping MIDI, picking up wave/macro edits and
+//! editor preset loads (the handover mailbox: hold, release, cancel), macro modulation, the
+//! engine, the effect chain, telemetry publishing, and the re-`prepare`/`reset` nih-plug
+//! performs after a host state load — runs without a single heap allocation or deallocation,
+//! for any parameters, events and block sizes. (Editor preset loads never make nih-plug restore
+//! a state on the audio thread: see `pixl::handover`.)
 //!
 //! A counting global allocator is armed only around those calls (per thread, so the test
 //! harness and other threads are not counted).
@@ -11,9 +13,10 @@ mod common;
 
 use common::Rng;
 use nih_plug::prelude::NoteEvent;
+use pixl::handover::{PresetMailbox, RecordKind};
 use pixl::midi::{map_note_event, EventStream, TimedEvent};
 use pixl::params::PixlParams;
-use pixl::presets::init_state;
+use pixl::presets::{factory_library, init_state};
 use pixl::processor::{BlockInput, Processor};
 use pixl_core::sync::{AtomicMacros, AtomicTelemetry, AtomicWave};
 use pixl_core::{wave, MacroAssignments, ParamId, ParamValues, PARAMS};
@@ -145,6 +148,9 @@ fn the_audio_path_never_touches_the_heap() {
         let wave = AtomicWave::new(wave::default_wave());
         let macros = AtomicMacros::new(&MacroAssignments::factory_default());
         let telemetry = AtomicTelemetry::default();
+        let mailbox = PresetMailbox::new();
+        let presets = &factory_library().presets;
+        let mut next_id = 0u64;
         let mut processor = Processor::new();
         processor.prepare(sr);
         let blocks: Vec<Block> = (0..400).map(|i| random_block(&mut rng, &base, i)).collect();
@@ -162,6 +168,21 @@ fn the_audio_path_never_touches_the_heap() {
                     macros.store(m);
                 }
             });
+            // Editor preset loads: published (held by the audio thread), queued a few blocks
+            // later (released), sometimes cancelled by a host state load.
+            match i % 23 {
+                0 if !presets.is_empty() => {
+                    next_id += 1;
+                    let preset = &presets[(i / 23) % presets.len()];
+                    mailbox.publish(next_id, RecordKind::Preset, &preset.state);
+                }
+                3 => mailbox.mark_queued(next_id),
+                17 if i % 2 == 1 => {
+                    next_id += 1;
+                    mailbox.publish(next_id, RecordKind::Cancel, &init_state());
+                }
+                _ => {}
+            }
             let transport = Transport { tempo_bpm: block.tempo, playing: true, beat_pos: Some(beat) };
             beat += block.len as f64 / sr as f64 * block.tempo / 60.0;
             let (l, r) = (&mut left[..block.len], &mut right[..block.len]);
@@ -172,7 +193,7 @@ fn the_audio_path_never_touches_the_heap() {
                 let input = BlockInput { params: &block.values, wave: &wave, macros: &macros, transport };
                 let mut source = block.midi.iter();
                 let events = EventStream::new(|| source.next().map(map_note_event));
-                processor.process(&input, events, l, r);
+                processor.process_with(&input, Some(&mailbox), events, l, r);
                 telemetry.publish(processor.telemetry());
                 if i % 97 == 0 {
                     // nih-plug re-initializes and resets after a state load (same config).

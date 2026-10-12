@@ -1,7 +1,7 @@
 //! The CLAP entry point (`clap_entry`) with a hardened `clap.state` extension.
 //!
 //! This is what `nih_export_clap!(Pixl)` generates, plus two fixes to nih-plug's CLAP state
-//! handling:
+//! handling and one to its note port:
 //!
 //! 1. **Damaged state cannot abort the host.** nih-plug's loader reads an 8-byte length
 //!    prefix from the stream and reserves that many bytes up front, so a damaged project or
@@ -15,17 +15,30 @@
 //!    for exactly this ("after loading a preset"), so after a successful load the host's
 //!    `clap.params` `rescan` is called, on the main thread (deferred through
 //!    `request_callback` → `on_main_thread` if the load happened elsewhere).
+//! 3. **The pitch wheel and channel pressure work in Logic.** nih-plug's note input port
+//!    prefers the CLAP note dialect. clap-wrapper's AUv2 layer (and AUv3) honours that by
+//!    turning MIDI pitch bend and channel pressure into channel-wide CLAP note expressions
+//!    (tuning ±2 st, pressure, key −1), which nih-plug only forwards as per-note `PolyTuning`/
+//!    `PolyPressure` events. The proxied `clap.note-ports` keeps nih-plug's port (supported:
+//!    CLAP and MIDI) but prefers the **MIDI** dialect, so those layers forward raw MIDI and
+//!    nih-plug delivers `MidiPitchBend`/`MidiChannelPressure`, exactly like the VST3 layer
+//!    and MIDI-speaking CLAP hosts. (The MIDI mapping also understands the expression form,
+//!    see [`crate::midi`].)
 //!
 //! Mechanism: every instance is handed to the host behind a thin proxy `clap_plugin`. The
 //! proxy shares nih-plug's `plugin_data`, and nih-plug's callbacks only ever read
 //! `(*plugin).plugin_data`, so all function pointers except `destroy`, `get_extension` and
 //! `on_main_thread` are nih-plug's own and work unchanged with the proxy pointer.
-//! `get_extension("clap.state")` returns [`HARDENED_STATE`] (`save` is forwarded as is).
+//! `get_extension("clap.state")` returns [`HARDENED_STATE`] (`save` is forwarded as is) and
+//! `get_extension("clap.note-ports")` returns [`MIDI_NOTE_PORTS`].
 //!
-//! clap-wrapper links this symbol into the CLAP, VST3 and AUv2 bundles (`wrapper/`), so both
+//! clap-wrapper links this symbol into the CLAP, VST3 and AUv2 bundles (`wrapper/`), so the
 //! fixes apply to every format.
 
 use crate::Pixl;
+use clap_sys::ext::note_ports::{
+    clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_MIDI,
+};
 use clap_sys::ext::params::{clap_host_params, CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES};
 use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::ext::thread_check::{clap_host_thread_check, CLAP_EXT_THREAD_CHECK};
@@ -65,6 +78,11 @@ const FACTORY: clap_plugin_factory = clap_plugin_factory {
 
 /// The `clap.state` extension handed to hosts (see the module docs).
 static HARDENED_STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
+
+/// The `clap.note-ports` extension handed to hosts: nih-plug's ports, input ports preferring
+/// the MIDI dialect (see the module docs).
+static MIDI_NOTE_PORTS: clap_plugin_note_ports =
+    clap_plugin_note_ports { count: Some(note_ports_count), get: Some(note_ports_get) };
 
 fn descriptor() -> &'static PluginDescriptor {
     static DESCRIPTOR: OnceLock<PluginDescriptor> = OnceLock::new();
@@ -254,6 +272,51 @@ unsafe fn inner_state(inner: *const clap_plugin) -> Option<clap_plugin_state> {
     }
 }
 
+/// nih-plug's own `clap.note-ports` extension of `inner` (a copy of its function table).
+///
+/// # Safety
+/// `inner` must be a live nih-plug `clap_plugin`.
+unsafe fn inner_note_ports(inner: *const clap_plugin) -> Option<clap_plugin_note_ports> {
+    // SAFETY: per the contract; nih-plug returns null or a pointer into its live wrapper.
+    unsafe {
+        let get_extension = (*inner).get_extension?;
+        let ext = get_extension(inner, CLAP_EXT_NOTE_PORTS.as_ptr()) as *const clap_plugin_note_ports;
+        ext.as_ref().copied()
+    }
+}
+
+unsafe extern "C" fn note_ports_count(plugin: *const clap_plugin, is_input: bool) -> u32 {
+    // SAFETY: host contract (our live proxy); forwarded unchanged.
+    unsafe {
+        let Some(proxy) = proxy_of(plugin) else { return 0 };
+        match inner_note_ports(proxy.inner).and_then(|p| p.count) {
+            Some(count) => count(proxy.inner, is_input),
+            None => 0,
+        }
+    }
+}
+
+unsafe extern "C" fn note_ports_get(
+    plugin: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_note_port_info,
+) -> bool {
+    // SAFETY: host contract (our live proxy, `info` valid for writes or null).
+    unsafe {
+        let Some(proxy) = proxy_of(plugin) else { return false };
+        let Some(get) = inner_note_ports(proxy.inner).and_then(|p| p.get) else { return false };
+        if info.is_null() || !get(proxy.inner, index, is_input, info) {
+            return false;
+        }
+        let info = &mut *info;
+        if is_input && info.supported_dialects & CLAP_NOTE_DIALECT_MIDI != 0 {
+            info.preferred_dialect = CLAP_NOTE_DIALECT_MIDI;
+        }
+        true
+    }
+}
+
 unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char) -> *const c_void {
     // SAFETY: host contract: `plugin` is our proxy, `id` a C string or null.
     unsafe {
@@ -264,6 +327,12 @@ unsafe extern "C" fn get_extension(plugin: *const clap_plugin, id: *const c_char
         if CStr::from_ptr(id) == CLAP_EXT_STATE {
             return match inner_state(proxy.inner) {
                 Some(_) => &HARDENED_STATE as *const clap_plugin_state as *const c_void,
+                None => null(),
+            };
+        }
+        if CStr::from_ptr(id) == CLAP_EXT_NOTE_PORTS {
+            return match inner_note_ports(proxy.inner) {
+                Some(_) => &MIDI_NOTE_PORTS as *const clap_plugin_note_ports as *const c_void,
                 None => null(),
             };
         }

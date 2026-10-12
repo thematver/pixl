@@ -1,0 +1,33 @@
+[package]
+name = "pixl-audition"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+license = "LicenseRef-PIXL-Proprietary"
+description = "Factory-library audition: renders every PIXL preset through the real plugin processor and measures it"
+
+# Stand-alone maintenance tool, deliberately not a member of the PIXL workspace.
+[workspace]
+
+[[bin]]
+name = "audition"
+path = "src/main.rs"
+
+[dependencies]
+pixl-core = { path = "../../../crates/pixl-core" }
+pixl-dsp = { path = "../../../crates/pixl-dsp" }
+pixl-fx = { path = "../../../crates/pixl-fx" }
+pixl-plugin = { path = "../../../crates/pixl-plugin", default-features = false }
+serde_json = "1.0"
+
+# Built with `--profile audition`, so its artifacts live in their own `<target>/audition/`
+# directory: sharing `<target>/release/` with the PIXL workspace (a different lock file and
+# profile) would make the two builds overwrite each other's copies of the PIXL crates.
+[profile.audition]
+inherits = "release"
+opt-level = 3
+debug = false
+lto = false
+codegen-units = 16
+panic = "unwind"

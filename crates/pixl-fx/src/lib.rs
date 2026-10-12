@@ -5,8 +5,8 @@
 //!
 //! | stage | module | summary |
 //! |---|---|---|
-//! | bitcrusher | [`crusher`] + [`blep`] | mid-tread `2^bits` quantizer, fractional sample-and-hold with minimum-phase band-limited steps |
-//! | chip filter | [`filters`] | NES HPF 90 Hz → HPF 440 Hz → LPF 14 kHz; GB HPF 28 Hz; 10 ms crossfaded mode switches |
+//! | bitcrusher | [`crusher`] + [`blep`] | mid-tread `2^bits` quantizer centred on the tracked signal level (sign quantizer below 2 bits), fractional sample-and-hold with minimum-phase band-limited steps |
+//! | chip filter | [`filters`] | NES HPF 90 Hz → HPF 440 Hz → LPF 14 kHz; GB HPF 28 Hz; 10 ms crossfaded mode switches, gradual high-pass release into none |
 //! | DC blocker | [`filters`] | first-order 5 Hz high-pass, always on |
 //! | echo | [`echo`] + [`resampler`] | SNES SPC700-style 32 kHz echo, Q7 FIR presets, ping-pong width, sleeps when idle |
 //! | output | [`output`] | smoothed gain, safety clipper (transparent below −1 dBFS, ceiling −0.01 dBFS) |

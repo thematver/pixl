@@ -3,8 +3,10 @@
 //! [`Processor`] contains everything the plugin does on the audio thread, without any
 //! nih-plug types, so it can be driven directly from tests:
 //!
-//! 1. pick up wave RAM and macro routings from the lock-free shared containers (only when
-//!    their version changed);
+//! 1. pick up an editor preset load from the [`PresetMailbox`] (see [`crate::handover`]: the
+//!    whole preset — parameters, wave RAM, macros — switches at this block boundary), or the
+//!    wave RAM and macro routings from the lock-free shared containers (only when their
+//!    version changed);
 //! 2. compute the effective parameter values (base values + macro modulation, via
 //!    [`pixl_core::apply_macros`]);
 //! 3. split the block at every event and at least every [`SUB_BLOCK`] samples; before each
@@ -16,6 +18,7 @@
 //!
 //! Nothing here allocates, locks or performs I/O after [`Processor::prepare`].
 
+use crate::handover::{Handover, HandoverReceiver, PresetMailbox};
 use crate::midi::TimedEvent;
 use pixl_core::sync::{AtomicMacros, AtomicWave};
 use pixl_core::{apply_macros, MacroAssignments, ParamId, ParamValues, TelemetrySnapshot, WaveRam, MACRO_COUNT};
@@ -152,8 +155,14 @@ pub struct Processor<E: VoiceEngine = Engine, F: EffectChain = FxChain> {
     effective: ParamValues,
     /// Current macro routings (copied from the shared container when its version changes).
     assignments: MacroAssignments,
+    /// The wave RAM the engine plays (re-sent after a reset or re-prepare instead of being
+    /// re-read from the shared container, which may still hold an older preset's wave).
+    wave: WaveRam,
+    wave_dirty: bool,
     wave_version: Option<u32>,
     macros_version: Option<u32>,
+    /// Audio side of the editor's preset handover.
+    handover: HandoverReceiver,
     telemetry: TelemetrySnapshot,
     /// Number of times the output guard had to reset the DSP.
     recoveries: u64,
@@ -183,21 +192,24 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             rate_supported: false,
             effective: ParamValues::defaults(),
             assignments: MacroAssignments::factory_default(),
+            wave: pixl_core::wave::default_wave(),
+            wave_dirty: true,
             wave_version: None,
             macros_version: None,
+            handover: HandoverReceiver::new(),
             telemetry: TelemetrySnapshot::default(),
             recoveries: 0,
         }
     }
 
     /// Configure for a sample rate. Re-prepares the DSP only when the rate changed (the
-    /// wrapper also calls `initialize` after every state load, possibly on the audio
-    /// thread, so the common path must not allocate). May allocate otherwise.
-    pub fn prepare(&mut self, sample_rate: f32) {
+    /// wrapper also calls `initialize` after every state load, so the common path must not
+    /// allocate). May allocate otherwise. Returns whether the DSP was (re-)prepared.
+    pub fn prepare(&mut self, sample_rate: f32) -> bool {
         let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 { sample_rate } else { 44_100.0 };
         self.rate_supported = (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate);
         if self.prepared && sample_rate == self.sample_rate {
-            return;
+            return false;
         }
         self.sample_rate = sample_rate;
         if self.rate_supported {
@@ -205,8 +217,8 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             self.fx.prepare(sample_rate, SUB_BLOCK);
         }
         self.prepared = true;
-        self.wave_version = None;
-        self.macros_version = None;
+        self.wave_dirty = true;
+        true
     }
 
     /// Silence everything and clear DSP state. Real-time safe.
@@ -214,7 +226,7 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
         self.engine.reset();
         self.fx.reset();
         // Make sure the engine gets the wave RAM again after a reset.
-        self.wave_version = None;
+        self.wave_dirty = true;
         self.telemetry = TelemetrySnapshot::default();
     }
 
@@ -261,6 +273,24 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
     where
         I: IntoIterator<Item = TimedEvent>,
     {
+        self.process_with(input, None, events, left, right)
+    }
+
+    /// [`Self::process`] with the editor's preset handover: while `handover` holds a preset
+    /// the editor is loading, its parameter values, wave RAM and macros are played instead of
+    /// `input` (all of them from the same block on), until nih-plug has applied the preset's
+    /// parameter changes (see [`crate::handover`]). Wait-free, allocation-free.
+    pub fn process_with<I>(
+        &mut self,
+        input: &BlockInput<'_>,
+        handover: Option<&PresetMailbox>,
+        events: I,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> BlockStatus
+    where
+        I: IntoIterator<Item = TimedEvent>,
+    {
         let len = left.len().min(right.len());
         left[len..].fill(0.0);
         right[len..].fill(0.0);
@@ -269,8 +299,21 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
         if !self.prepared {
             self.prepare(44_100.0);
         }
-        self.sync_shared(input);
-        self.update_effective(input.params);
+        if let Some(mailbox) = handover {
+            self.begin_handover(mailbox);
+        }
+        if !self.handover.is_holding() {
+            self.sync_shared(input);
+        }
+        if self.wave_dirty {
+            self.wave_dirty = false;
+            self.engine.set_wave(&self.wave);
+        }
+        let base = match self.handover.held() {
+            Some(record) => record.values,
+            None => *input.params,
+        };
+        self.update_effective(&base);
 
         if !self.rate_supported {
             // Unsupported sample rate: stay silent (events are consumed and dropped).
@@ -278,6 +321,7 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             left.fill(0.0);
             right.fill(0.0);
             self.telemetry = TelemetrySnapshot::default();
+            self.end_handover(input, handover);
             return BlockStatus::Silent;
         }
 
@@ -314,12 +358,54 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
         }
 
         self.collect_telemetry();
+        self.end_handover(input, handover);
         if !self.engine.is_silent() {
             BlockStatus::Active
         } else {
             match self.fx.tail_samples() {
                 0 => BlockStatus::Silent,
                 n => BlockStatus::Tail(n),
+            }
+        }
+    }
+
+    /// Start of a call: adopt a newly held preset's wave RAM and macros, or forget the held one
+    /// after a host state load.
+    fn begin_handover(&mut self, mailbox: &PresetMailbox) {
+        match self.handover.begin(mailbox) {
+            Handover::Hold => {
+                if let Some(record) = self.handover.held() {
+                    if record.wave != self.wave {
+                        self.wave = record.wave;
+                        self.wave_dirty = true;
+                    }
+                    let mut a = record.macros;
+                    a.sanitize();
+                    self.assignments = a;
+                }
+            }
+            Handover::Cancel => {
+                self.wave_version = None;
+                self.macros_version = None;
+            }
+            Handover::Unchanged => {}
+        }
+    }
+
+    /// End of a call: when the held preset is released, keep its wave RAM and macros until the
+    /// shared containers hold them (the editor installs them once nih-plug has applied the
+    /// parameters); re-read the shared ones if they already do.
+    fn end_handover(&mut self, input: &BlockInput<'_>, handover: Option<&PresetMailbox>) {
+        let Some(mailbox) = handover else { return };
+        if let Some(released) = self.handover.end() {
+            // Versions first: a later install bumps them, so it is never missed.
+            let (wv, mv) = (input.wave.version(), input.macros.version());
+            if mailbox.committed() >= released {
+                self.wave_version = None;
+                self.macros_version = None;
+            } else {
+                self.wave_version = Some(wv);
+                self.macros_version = Some(mv);
             }
         }
     }
@@ -331,7 +417,10 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
         if self.wave_version != Some(wv) {
             self.wave_version = Some(wv);
             let wave = input.wave.load();
-            self.engine.set_wave(&wave);
+            if wave != self.wave {
+                self.wave = wave;
+                self.wave_dirty = true;
+            }
         }
         let mv = input.macros.version();
         if self.macros_version != Some(mv) {
@@ -363,7 +452,7 @@ impl<E: VoiceEngine, F: EffectChain> Processor<E, F> {
             r.fill(0.0);
             self.engine.reset();
             self.fx.reset();
-            self.wave_version = None;
+            self.wave_dirty = true;
             self.recoveries = self.recoveries.wrapping_add(1);
         }
     }

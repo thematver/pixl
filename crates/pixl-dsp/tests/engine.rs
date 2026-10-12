@@ -563,6 +563,73 @@ fn unison_sub_voices_detune_and_level() {
 }
 
 #[test]
+fn unison_count_changes_apply_at_the_next_note() {
+    // SPEC §4.8 (DSP-06): structural changes, the unison count included, apply at the next
+    // note — also when that note retriggers a sounding voice (MONO, POLY same key) or continues
+    // it (LEGATO) — through a short crossfade that must not click.
+    let subs = |rig: &Rig| rig.e.voices().map(|v| v.sub_voices).collect::<Vec<_>>();
+    let jump = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+    for (mode, second) in [(VoiceMode::Mono, 64u8), (VoiceMode::Legato, 64), (VoiceMode::Poly, 60)] {
+        for chip in [ChipMode::Free, ChipMode::Nes] {
+            let mut p = clean(chip, 0);
+            p.set(CHANNEL_ON[2], 1.0);
+            p.set(ParamId::VoiceMode, mode.index() as f32);
+            p.set(ParamId::UniDetune, 20.0);
+            let mut rig = Rig::new(FS, p);
+            rig.on(60, 1.0);
+            let a = rig.left(secs(FS, 0.1));
+            assert_eq!(subs(&rig), [1]);
+            // Unison on with 4 voices: nothing changes until the next note.
+            rig.set(ParamId::UniOn, 1.0);
+            rig.set(ParamId::UniVoices, 4.0);
+            rig.left(secs(FS, 0.05));
+            assert_eq!(subs(&rig), [1], "{mode:?} {chip:?}: changed before the next note");
+            if mode == VoiceMode::Poly {
+                rig.off(60);
+                rig.left(64);
+            }
+            rig.on(second, 1.0);
+            let b = rig.left(secs(FS, 0.1));
+            assert_eq!(subs(&rig), [4], "{mode:?} {chip:?}: the next note did not adopt unison 4");
+            assert!(jump(&b) < jump(&a) * 1.5 + 0.05, "{mode:?} {chip:?}: click at the change");
+            assert!(rms(&remove_dc(&b[secs(FS, 0.02)..])) > 0.1, "{mode:?} {chip:?}: sounds after the change");
+            // And back to one voice at the following note.
+            rig.set(ParamId::UniOn, 0.0);
+            rig.on(if mode == VoiceMode::Poly { second } else { 67 }, 1.0);
+            let c = rig.left(secs(FS, 0.1));
+            assert_eq!(subs(&rig).last(), Some(&1), "{mode:?} {chip:?}");
+            assert!(jump(&c) < jump(&a) * 1.5 + 0.05, "{mode:?} {chip:?}: click at the change back");
+        }
+    }
+}
+
+#[test]
+fn toggling_analog_in_free_mode_does_not_interrupt_notes() {
+    // DSP-08: `analog` has no effect in FREE, so toggling it (menu, automation) must not run
+    // the 2 + 2 ms mode-switch crossfade that cuts a hole into every sounding note.
+    let mut rig = Rig::new(FS, clean(ChipMode::Free, 0));
+    rig.on(60, 1.0);
+    rig.left(secs(FS, 0.1));
+    let window = secs(FS, 0.0005);
+    for analog in [0.0, 1.0, 0.0] {
+        rig.set(ParamId::Analog, analog);
+        let x = rig.left(secs(FS, 0.02));
+        let quietest = x.chunks(window).map(rms).fold(f64::MAX, f64::min);
+        assert!(quietest > 0.3, "analog {analog}: the note drops to {quietest:.3} RMS");
+    }
+    // In the chip modes `analog` changes the DAC and mixer: that still crossfades.
+    let mut p = clean(ChipMode::Gb, 0);
+    p.set(ParamId::Analog, 1.0);
+    let mut rig = Rig::new(FS, p);
+    rig.on(60, 1.0);
+    rig.left(secs(FS, 0.1));
+    rig.set(ParamId::Analog, 0.0);
+    let x = rig.left(secs(FS, 0.02));
+    let quietest = x.chunks(window).map(|c| rms(&remove_dc(c))).fold(f64::MAX, f64::min);
+    assert!(quietest < 0.1, "GB: the switch crossfade runs ({quietest:.3})");
+}
+
+#[test]
 fn sustain_pedal_defers_note_offs() {
     let mut rig = Rig::new(FS, clean(ChipMode::Gb, 0));
     rig.on(60, 1.0);
@@ -580,6 +647,55 @@ fn sustain_pedal_defers_note_offs() {
     rig.on(62, 1.0);
     rig.ev(EngineEvent::Sustain { on: false });
     assert!(rig.e.voices().any(|v| v.note == 62 && v.gate));
+}
+
+#[test]
+fn pedal_up_in_mono_releases_the_last_played_note() {
+    // SPEC §4.7: mono note priority is "last note"; the sustain pedal only defers note-offs. On
+    // pedal up, every sustained note is released at once: the voice must not "return" to an
+    // older sustained note (wrong pitch, spurious retrigger) on its way to the release.
+    for mode in [VoiceMode::Mono, VoiceMode::Legato] {
+        for (first, second) in [(72u8, 60u8), (60, 72)] {
+            let mut p = clean(ChipMode::Free, 0);
+            p.set(ParamId::VoiceMode, mode.index() as f32);
+            p.set(ParamId::P1Release, 400.0);
+            let mut rig = Rig::new(FS, p);
+            rig.ev(EngineEvent::Sustain { on: true });
+            rig.on(first, 1.0);
+            rig.left(2000);
+            rig.off(first);
+            rig.on(second, 1.0);
+            rig.left(2000);
+            rig.off(second);
+            rig.left(2000);
+            let before = rig.e.voices().next().map(|v| v.order);
+            rig.ev(EngineEvent::Sustain { on: false });
+            let v: Vec<_> = rig.e.voices().collect();
+            assert_eq!(v.len(), 1, "{mode:?} {first}->{second}: {v:?}");
+            assert_eq!(v[0].note, second, "{mode:?} {first}->{second}: the release plays the last note");
+            assert!(!v[0].gate);
+            assert_eq!(Some(v[0].order), before, "{mode:?} {first}->{second}: no retrigger on pedal up");
+            let tail = rig.left(secs(FS, 0.1));
+            let f = zc_freq(&tail, FS);
+            assert!(
+                (1200.0 * (f / hz(second as f64)).log2()).abs() < 5.0,
+                "{mode:?} {first}->{second}: tail at {f:.1} Hz"
+            );
+        }
+        // A key still held when the pedal comes up is returned to (last-note priority).
+        let mut p = clean(ChipMode::Free, 0);
+        p.set(ParamId::VoiceMode, mode.index() as f32);
+        let mut rig = Rig::new(FS, p);
+        rig.on(64, 1.0);
+        rig.ev(EngineEvent::Sustain { on: true });
+        rig.on(72, 1.0);
+        rig.off(72);
+        rig.on(67, 1.0);
+        rig.off(67);
+        rig.ev(EngineEvent::Sustain { on: false });
+        let v: Vec<_> = rig.e.voices().collect();
+        assert_eq!((v.len(), v[0].note, v[0].gate), (1, 64, true), "{mode:?}: back to the held key {v:?}");
+    }
 }
 
 #[test]
@@ -1077,6 +1193,44 @@ fn chip_switch_while_holding_is_clean() {
 }
 
 #[test]
+fn mode_switches_move_the_dc_level_smoothly() {
+    // FX-03 (SPEC §4.8): the unipolar DAC (NES/GB with `analog` on) carries a DC level, the
+    // bipolar one does not. Across a switch the 2 + 2 ms crossfade must not step that level (the
+    // chip filter would turn the step into a thump): it is held through the crossfade and then
+    // settles with a 100 ms time constant.
+    let mean = |x: &[f32]| x.iter().map(|v| *v as f64).sum::<f64>() / x.len() as f64;
+    for (from, to, analog_to) in
+        [(ChipMode::Gb, ChipMode::Free, 1.0), (ChipMode::Free, ChipMode::Nes, 1.0), (ChipMode::Gb, ChipMode::Gb, 0.0)]
+    {
+        let mut p = clean(from, 0);
+        p.set(ParamId::P1Level, 10.0);
+        p.set(ParamId::Analog, 1.0);
+        let mut rig = Rig::new(FS, p);
+        rig.on(72, 1.0);
+        let a = rig.left(secs(FS, 0.3));
+        rig.set(ParamId::Chip, to.index() as f32);
+        rig.set(ParamId::Analog, analog_to);
+        let b = rig.left(secs(FS, 1.0));
+        // DC trajectory in windows of four pulse periods (523 Hz → 4 × 92 samples).
+        let w = 367;
+        let dc: Vec<f64> =
+            a[a.len() - 4 * w..].chunks(w).chain(b.chunks(w)).filter(|c| c.len() == w).map(mean).collect();
+        let (start, end) = (dc[0], *dc.last().unwrap());
+        let step = dc.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0, f64::max);
+        println!(
+            "{from:?} → {to:?} (analog {analog_to}): DC {start:+.3} → {end:+.3}, largest step per window {step:.4}"
+        );
+        assert!((start - end).abs() > 0.1, "the switch changes the DC level");
+        // A plain 4 ms crossfade moves the whole difference within one window; the bridge moves
+        // ≈ 7.6 ms / 100 ms of it per window (plus the crossfade's amplitude modulation).
+        assert!(step < 0.15 * (start - end).abs(), "{from:?} → {to:?}: DC step {step} of {}", (start - end).abs());
+        // Fully settled to the new mode after the bridge.
+        let late = mean(&b[secs(FS, 0.8)..]);
+        assert!((late - end).abs() < 0.01, "{late} vs {end}");
+    }
+}
+
+#[test]
 fn mod_wheel_adds_vibrato_without_vib_on() {
     let mut rig = Rig::new(FS, clean(ChipMode::Free, 0));
     rig.ev(EngineEvent::ModWheel { value: 1.0 });
@@ -1163,4 +1317,288 @@ fn silence_detection() {
     assert!(rig.e.is_silent());
     let x = rig.left(256);
     assert!(x.iter().all(|v| *v == 0.0), "exact digital silence");
+}
+
+#[test]
+fn long_modulated_chords_leave_no_dc_and_end_in_silence() {
+    // SPEC §4.2 (bounded numeric drift): 30 s of an 8-note chord on the init patch (GB, unison
+    // 3) while macros move unison width and pans (what the factory SPACE macro does). After the
+    // release the integrator must return to exactly zero and the engine report silence — no
+    // DC residue that grows with playing time.
+    for chip in [ChipMode::Gb, ChipMode::Nes, ChipMode::Free] {
+        let mut p = ParamValues::defaults();
+        p.set(ParamId::Chip, chip.index() as f32);
+        p.set(ParamId::P1On, 1.0);
+        p.set(ParamId::UniVoices, 4.0);
+        let mut rig = Rig::new(FS, p);
+        let chord = [48u8, 52, 55, 60, 64, 67, 71, 72];
+        for n in chord {
+            rig.on(n, 0.9);
+        }
+        let mut l = [0.0f32; SUB];
+        let mut r = [0.0f32; SUB];
+        let blocks = secs(FS, 30.0) / SUB;
+        for b in 0..blocks {
+            let ph = b as f32 * 0.013;
+            rig.p.set(ParamId::UniWidth, 50.0 + 50.0 * ph.sin());
+            rig.p.set(ParamId::WvPan, 80.0 * (ph * 0.7).cos());
+            rig.p.set(ParamId::P1Pan, -60.0 * (ph * 1.3).sin());
+            rig.p.set(ParamId::WvLevel, 9.0 + 3.0 * (ph * 0.37).sin());
+            rig.render_into(&mut l, &mut r);
+        }
+        for n in chord {
+            rig.off(n);
+        }
+        rig.left(secs(FS, 2.0));
+        assert_eq!(rig.e.active_voices(), 0, "{chip:?}");
+        let (x, y) = rig.render(1024);
+        let dc = x.iter().chain(y.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
+        println!("{chip:?}: residue after release {dc:.3e}");
+        assert!(dc < 1e-6, "{chip:?}: DC residue {dc:e} after 30 s");
+        assert!(rig.e.is_silent(), "{chip:?}: silent after release");
+    }
+}
+
+#[test]
+fn nes_triangle_unison_layers_start_at_random_phases() {
+    // SPEC §4.3/§4.7 (DSP-05): unison sub-voices are scaled by 1/√n and must not start
+    // coherently. The volume-less NES triangle cannot start on a random step (that would jump
+    // its DAC), so its layers wait a random fraction of a period on the rest step. The init
+    // patch (wave channel, unison 3) switched to NES must therefore start about as loud as the
+    // same patch with one voice — not +4.8 dB (three layers in phase). Measured at the onset
+    // (later the layers' detune decorrelates them anyway) and averaged over 24 notes, i.e. 24
+    // different seeds.
+    let onset_power = |voices: f32| {
+        let mut p = ParamValues::defaults();
+        p.set(ParamId::Chip, ChipMode::Nes.index() as f32);
+        p.set(ParamId::UniVoices, voices);
+        let mut rig = Rig::new(FS, p);
+        let mut power = 0.0;
+        for k in 0..24u8 {
+            let note = 45 + (k * 7) % 31;
+            rig.on(note, 0.9);
+            let x = rig.left(secs(FS, 0.06));
+            rig.off(note);
+            rig.left(secs(FS, 0.4));
+            power += rms(&remove_dc(&x[secs(FS, 0.005)..])).powi(2);
+        }
+        power
+    };
+    let (p1, p3) = (onset_power(1.0), onset_power(3.0));
+    let diff = 10.0 * (p3 / p1).log10();
+    println!("unison 3 vs 1 (NES triangle, init patch): {diff:+.2} dB");
+    assert!(diff.abs() < 1.5, "unison 3 is {diff:+.2} dB against unison 1");
+    // Still click-free: every layer starts on the rest step, so the output starts from zero
+    // and only steps along the triangle (a layer started on a random step would jump its DAC
+    // by up to 15 levels at once).
+    let mut p = clean(ChipMode::Nes, 2);
+    p.set(ParamId::UniOn, 1.0);
+    p.set(ParamId::UniVoices, 4.0);
+    let mut rig = Rig::new(FS, p);
+    rig.on(57, 1.0);
+    let x = rig.left(64);
+    let start = peak(&x[..4]);
+    assert!(start < 0.02, "DAC jump of {start} at the note-on");
+}
+
+// ---------------------------------------------------------------------------------------
+// Real-time safety of long sessions
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn reused_voice_slot_after_long_idle_renders_in_constant_time() {
+    // SPEC §0 / §4.2: the integrate-and-dump noise (NES period 0 = 9.3 clocks per sample)
+    // must not do work proportional to how long a voice slot sat idle. A slot left idle for
+    // 60 s is reused by the next chord; its first blocks must stay far inside the real-time
+    // budget of a 64-sample block (1.33 ms at 48 kHz; the defect took 14-17 ms here). Best of
+    // three runs, so scheduling noise on a loaded machine cannot fail the test.
+    let mut best = f64::MAX;
+    for _ in 0..3 {
+        let mut p = clean(ChipMode::Nes, 3);
+        p.set(ParamId::NsPeriod, 0.0);
+        p.set(ParamId::NsRelease, 0.0);
+        let mut rig = Rig::new(FS, p);
+        let chord = [48u8, 52, 55, 60];
+        for n in chord {
+            rig.on(n, 1.0);
+        }
+        rig.left(secs(FS, 0.1));
+        for n in chord {
+            rig.off(n);
+        }
+        rig.left(secs(FS, 60.0));
+        assert_eq!(rig.e.active_voices(), 0);
+        for n in chord {
+            rig.on(n, 1.0);
+        }
+        let mut l = [0.0f32; SUB];
+        let mut r = [0.0f32; SUB];
+        let mut worst = 0.0f64;
+        for _ in 0..8 {
+            let t0 = std::time::Instant::now();
+            rig.render_into(&mut l, &mut r);
+            worst = worst.max(t0.elapsed().as_secs_f64());
+        }
+        best = best.min(worst);
+        assert!(rms(&remove_dc(&rig.left(4800))) > 0.05, "the reused voices sound");
+    }
+    println!("first blocks after 60 s idle: worst {:.4} ms", best * 1e3);
+    assert!(best < 1.0e-3, "{:.3} ms for one 64-sample block", best * 1e3);
+}
+
+// ---------------------------------------------------------------------------------------
+// Note-on values in chip modes (SPEC §4.4 / §4.6)
+// ---------------------------------------------------------------------------------------
+
+/// Frame period (samples) of a chip mode at [`FS`].
+fn frame_period(chip: ChipMode) -> f64 {
+    let hz = if chip == ChipMode::Gb { pixl_dsp::chip::GB_FRAME_HZ } else { pixl_dsp::chip::NES_FRAME_NTSC };
+    FS as f64 / hz
+}
+
+#[test]
+fn chip_mode_note_on_plays_its_initial_values_for_the_first_frame() {
+    // SPEC §4.4: on note-on the initial values apply immediately. A one-shot envelope shorter
+    // than a frame (A 0 / D 5 ms / S 0: clicks, hats, blips) must sound at full level for its
+    // first frame wherever the note falls relative to the global frame clock — at least half a
+    // frame, at most one and a half.
+    for chip in [ChipMode::Nes, ChipMode::Gb] {
+        let period = frame_period(chip);
+        for offset in [0usize, 1, 37, 200, 399, 401, 600, 790] {
+            let mut p = clean(chip, 0);
+            p.set(ParamId::P1Decay, 5.0);
+            p.set(ParamId::P1Sustain, 0.0);
+            p.set(ParamId::P1Release, 0.0);
+            let mut rig = Rig::new(FS, p);
+            rig.left(offset);
+            rig.on(69, 1.0);
+            // Raw output (unipolar DAC): high half-periods reach the full level, silence is 0.
+            let x = rig.left(secs(FS, 0.06));
+            let pk = peak(&x);
+            assert!(pk > 0.6, "{chip:?} offset {offset}: first frame silent (peak {pk})");
+            let last = x.iter().rposition(|v| v.abs() > 0.1).unwrap_or(0) as f64;
+            assert!(
+                last >= 0.45 * period && last <= 1.55 * period,
+                "{chip:?} offset {offset}: sounded for {last} samples (frame {period:.0})"
+            );
+        }
+    }
+}
+
+#[test]
+fn chip_mode_sweep_and_glide_start_at_their_initial_offset() {
+    // SPEC §4.6: the sweep offset starts at +amt; a glide starts at the previous note. In chip
+    // modes the first frame plays exactly that, even for sweeps and glides shorter than a frame.
+    for chip in [ChipMode::Nes, ChipMode::Gb] {
+        let period = frame_period(chip);
+        for offset in [0usize, 123, 399, 401, 777] {
+            for time in [5.0f32, 8.0, 20.0, 180.0] {
+                let mut p = clean(chip, 0);
+                p.set(ParamId::SweepOn, 1.0);
+                p.set(ParamId::SweepAmt, 24.0);
+                p.set(ParamId::SweepTime, time);
+                p.set(ParamId::SweepCurve, Curve::Exp.index() as f32);
+                let mut rig = Rig::new(FS, p);
+                rig.left(offset);
+                rig.on(57, 1.0);
+                let x = rig.left((0.45 * period) as usize);
+                // Skip the onset (a GB duty cycle starts high, so its first crossing is early).
+                let f = zc_freq(&x[64..], FS);
+                let expect = hz(57.0 + 24.0);
+                assert!(
+                    (1200.0 * (f / expect).log2()).abs() < 40.0,
+                    "{chip:?} offset {offset} sweep {time} ms: first frame at {f:.1} Hz, expected ≈{expect:.1}"
+                );
+            }
+        }
+        // Glide: MONO legato line A4 → A5 with a 10 ms glide starts at A4.
+        let mut p = clean(chip, 0);
+        p.set(ParamId::VoiceMode, VoiceMode::Legato.index() as f32);
+        p.set(ParamId::GlideOn, 1.0);
+        p.set(ParamId::GlideTime, 10.0);
+        p.set(ParamId::GlideMode, GlideMode::Always.index() as f32);
+        p.set(ParamId::GlideCurve, Curve::Lin.index() as f32);
+        let mut rig = Rig::new(FS, p);
+        rig.on(69, 1.0);
+        rig.left(secs(FS, 0.2) + 211);
+        rig.on(81, 1.0);
+        rig.left(1);
+        assert!((telemetry(&rig.e).pitch_offset_st + 12.0).abs() < 1e-3, "{chip:?} glide starts at the previous note");
+        let x = rig.left((0.45 * period) as usize);
+        let f = zc_freq(&x[32..], FS);
+        assert!((1200.0 * (f / hz(69.0)).log2()).abs() < 40.0, "{chip:?} glide first frame at {f:.1} Hz");
+    }
+}
+
+#[test]
+fn busy_chip_patch_is_independent_of_host_segmentation() {
+    fn render(block: usize) -> Vec<f32> {
+        let mut p = ParamValues::defaults();
+        p.set(ParamId::P1On, 1.0);
+        p.set(ParamId::NsOn, 1.0);
+        p.set(ParamId::NsLevel, 4.0);
+        let mut effective = p;
+        pixl_core::macros::apply_macros(
+            &p,
+            [p.get(ParamId::Macro1), p.get(ParamId::Macro2), p.get(ParamId::Macro3), p.get(ParamId::Macro4)],
+            &pixl_core::MacroAssignments::factory_default(),
+            &mut effective,
+        );
+        let p = effective;
+        let mut e = Engine::new(64);
+        e.prepare(FS, 64);
+        e.set_params(&p);
+        let events = [
+            (0, EngineEvent::NoteOn { note: 60, velocity: 0.9 }),
+            (480, EngineEvent::NoteOn { note: 64, velocity: 0.7 }),
+            (960, EngineEvent::NoteOn { note: 67, velocity: 0.5 }),
+            (12000, EngineEvent::PitchBend { value: 12000.0 / 16383.0 * 2.0 - 1.0 }),
+            (14400, EngineEvent::NoteOff { note: 60 }),
+            (16800, EngineEvent::ModWheel { value: 100.0 / 127.0 }),
+            (19200, EngineEvent::Sustain { on: true }),
+            (21600, EngineEvent::NoteOff { note: 64 }),
+            (22080, EngineEvent::NoteOff { note: 67 }),
+            (24000, EngineEvent::NoteOn { note: 72, velocity: 1.0 }),
+            (28800, EngineEvent::NoteOff { note: 72 }),
+            (33600, EngineEvent::Sustain { on: false }),
+            (34560, EngineEvent::PitchBend { value: 8192.0 / 16383.0 * 2.0 - 1.0 }),
+            (38400, EngineEvent::NoteOn { note: 55, velocity: 0.6 }),
+            (38400, EngineEvent::NoteOn { note: 59, velocity: 0.6 }),
+            (52800, EngineEvent::NoteOff { note: 55 }),
+            (52800, EngineEvent::NoteOff { note: 59 }),
+        ];
+        let mut next = 0;
+        let mut out = Vec::new();
+        for start in (0..76800).step_by(block) {
+            let end = (start + block).min(76800);
+            let mut pos = start;
+            while pos < end {
+                while next < events.len() && events[next].0 == pos {
+                    e.event(events[next].1);
+                    next += 1;
+                }
+                let stop = events.get(next).map_or(end, |e| e.0.min(end));
+                let n = (stop - pos).min(64);
+                let mut l = vec![0.0; n];
+                let mut r = vec![0.0; n];
+                e.set_params(&p);
+                e.render(&mut l, &mut r);
+                out.extend(l);
+                pos += n;
+            }
+        }
+        out
+    }
+    let a = render(64);
+    for block in [1, 7, 63, 100, 333, 512] {
+        let b = render(block);
+        let (i, diff) = a
+            .iter()
+            .zip(&b)
+            .enumerate()
+            .map(|(i, (a, b))| (i, (a - b).abs()))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!(diff < 1e-5, "block {block}, sample {i}: {diff}");
+    }
 }

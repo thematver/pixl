@@ -12,8 +12,22 @@
 //! | CC 121 reset all controllers | bend 0, mod wheel 0, aftertouch 0, sustain off |
 //! | CC 123 all notes off (and 124–127, which imply it per the MIDI spec) | `AllNotesOff` |
 //! | Channel pressure | `Aftertouch { value: 0..=1 }` |
+//! | CLAP channel-wide tuning expression (key −1, no note id) | `PitchBend`, decoded as a wheel position |
+//! | CLAP channel-wide pressure expression (key −1, no note id) | `Aftertouch { value: 0..=1 }` |
 //!
-//! PIXL is omni: the MIDI channel is ignored. Everything else (poly pressure, note
+//! The last two rows are how clap-wrapper's AUv2 (Logic) and AUv3 layers deliver the pitch
+//! wheel and channel pressure to a plugin whose note port prefers the CLAP dialect: MIDI
+//! bend becomes a tuning expression of `(bend14 − 8192) / 8192 × 2` semitones and channel
+//! pressure a pressure expression `value / 127`, both with key −1 (nih-plug turns key −1 into
+//! `note: 255`). PIXL's note port prefers the MIDI dialect (see [`crate::entry`]), so these
+//! layers normally forward raw MIDI instead; the mapping keeps the wheel working if a host or
+//! wrapper sends the expressions anyway. The wheel position is decoded back to the 14-bit
+//! value, so PIXL's own `pb_range` applies and the centre is exactly 0. Both forms set the
+//! same absolute engine state (the wheel position, the pressure) — they are never added up,
+//! so a gesture a host delivers both ways cannot bend twice as far. Expressions addressed to a
+//! note (a key or a note id) are per-note articulation, which PIXL does not support: ignored.
+//!
+//! PIXL is omni: the MIDI channel is ignored. Everything else (poly pressure, per-note
 //! expressions, program changes, other CCs) is ignored.
 
 use nih_plug::prelude::NoteEvent;
@@ -68,14 +82,36 @@ pub fn bend_from_normalized(value: f32) -> f32 {
     if !value.is_finite() {
         return 0.0;
     }
-    let raw = (value.clamp(0.0, 1.0) * 16383.0).round() as i32;
-    let centered = raw - 8192;
+    bend_from_raw((value.clamp(0.0, 1.0) * 16383.0).round() as i32)
+}
+
+/// Semitones per full wheel deflection in clap-wrapper's MIDI → CLAP tuning-expression
+/// translation (`(bend14 − 8192) / 8192 × 2`).
+pub const WRAPPER_BEND_SEMITONES: f32 = 2.0;
+
+/// Convert a channel-wide CLAP tuning expression in clap-wrapper's encoding (see the module
+/// docs) back into the wheel position −1..=1: the 14-bit value is reconstructed, so the
+/// centre is exactly 0 and the extremes exactly ±1; larger tunings saturate.
+pub fn bend_from_tuning(semitones: f32) -> f32 {
+    if !semitones.is_finite() {
+        return 0.0;
+    }
+    let raw = (semitones / WRAPPER_BEND_SEMITONES * 8192.0 + 8192.0).round().clamp(0.0, 16383.0);
+    bend_from_raw(raw as i32)
+}
+
+/// 14-bit MIDI pitch-bend value → −1..=1 (exactly 0 at 8192, ±1 at 0 and 16383).
+fn bend_from_raw(raw: i32) -> f32 {
+    let centered = raw.clamp(0, 16383) - 8192;
     if centered >= 0 {
         centered as f32 / 8191.0
     } else {
         centered as f32 / 8192.0
     }
 }
+
+/// `note` of a nih-plug note expression with the CLAP wildcard key −1 (channel-wide).
+pub const CHANNEL_WIDE_NOTE: u8 = 255;
 
 #[inline]
 fn unit(v: f32) -> f32 {
@@ -104,6 +140,13 @@ pub fn map_note_event<S>(event: &NoteEvent<S>) -> MappedEvents {
             MappedEvents::with(timing, &[EngineEvent::PitchBend { value: bend_from_normalized(value) }])
         }
         NoteEvent::MidiChannelPressure { pressure, .. } => {
+            MappedEvents::with(timing, &[EngineEvent::Aftertouch { value: unit(pressure) }])
+        }
+        // Channel-wide expressions only: key −1 and no note id (see the module docs).
+        NoteEvent::PolyTuning { voice_id: None, note: CHANNEL_WIDE_NOTE, tuning, .. } => {
+            MappedEvents::with(timing, &[EngineEvent::PitchBend { value: bend_from_tuning(tuning) }])
+        }
+        NoteEvent::PolyPressure { voice_id: None, note: CHANNEL_WIDE_NOTE, pressure, .. } => {
             MappedEvents::with(timing, &[EngineEvent::Aftertouch { value: unit(pressure) }])
         }
         NoteEvent::MidiCC { cc, value, .. } => map_cc(timing, cc, value),
@@ -215,6 +258,30 @@ mod tests {
         assert_eq!(bend_from_normalized(3.0), 1.0);
         let e = NoteEvent::MidiPitchBend { timing: 1, channel: 0, value: 1.0 };
         assert_eq!(map(e), [EngineEvent::PitchBend { value: 1.0 }]);
+    }
+
+    #[test]
+    fn channel_wide_expressions_from_clap_wrapper_are_the_wheel_and_pressure() {
+        // clap-wrapper (AUv2/AUv3, CLAP dialect): bend14 → (bend14 − 8192) / 8192 × 2 semitones
+        // as a TUNING expression with key −1; channel pressure → PRESSURE with key −1.
+        let tuning = |st: f32| Ev::PolyTuning { timing: 5, voice_id: None, channel: 0, note: 255, tuning: st };
+        let wrapper = |bend14: i32| (bend14 - 8192) as f32 / 8192.0 * 2.0;
+        for raw in [0u16, 1, 4096, 8191, 8192, 8193, 12000, 16383] {
+            let via_midi = bend_from_normalized(raw as f32 / 16383.0);
+            assert_eq!(map(tuning(wrapper(raw as i32))), [EngineEvent::PitchBend { value: via_midi }], "bend {raw}");
+        }
+        assert_eq!(map(tuning(0.0)), [EngineEvent::PitchBend { value: 0.0 }]);
+        assert_eq!(map(tuning(48.0)), [EngineEvent::PitchBend { value: 1.0 }]);
+        assert_eq!(map(tuning(f32::NAN)), [EngineEvent::PitchBend { value: 0.0 }]);
+        assert_eq!(map_note_event::<()>(&tuning(1.0)).timing(), 5);
+        let pressure = |p: f32| Ev::PolyPressure { timing: 0, voice_id: None, channel: 3, note: 255, pressure: p };
+        assert_eq!(map(pressure(100.0 / 127.0)), [EngineEvent::Aftertouch { value: 100.0 / 127.0 }]);
+        assert_eq!(map(pressure(f32::INFINITY)), [EngineEvent::Aftertouch { value: 0.0 }]);
+        // Per-note expressions (a key, or a note id with the wildcard key) are not channel-wide.
+        let per_key = Ev::PolyTuning { timing: 0, voice_id: None, channel: 0, note: 60, tuning: 1.0 };
+        let per_id = Ev::PolyTuning { timing: 0, voice_id: Some(7), channel: 0, note: 255, tuning: 1.0 };
+        let per_id_pressure = Ev::PolyPressure { timing: 0, voice_id: Some(7), channel: 0, note: 255, pressure: 1.0 };
+        assert!(map(per_key).is_empty() && map(per_id).is_empty() && map(per_id_pressure).is_empty());
     }
 
     #[test]

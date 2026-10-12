@@ -61,8 +61,8 @@ DARK = _harmonics({1: 1.0, 2: 0.35, 3: 0.12})
 SUB = _harmonics({1: 1.0, 2: 0.12})
 # Band-limited saw: full but not fizzy.
 BASS_SAW = _harmonics({k: 1.0 / k for k in range(1, 9)})
-# Saw + square blend: growl.
-GROWL = _from_fn(lambda i: 0.6 * (i / 2.0) + 0.4 * (15.0 if i < 16 else 0.0))
+# Raspy stack of low harmonics with staggered phases: an asymmetric, buzzy growl.
+GROWL = _harmonics({1: 1.0, 2: 0.55, 3: 0.45, 4: 0.3, 5: 0.25, 6: 0.18, 7: 0.14}, {2: 0.6, 3: 1.2, 5: 2.1})
 # Notched square: chunky, "stepped" bass.
 CHUNK = [15] * 10 + [9] * 6 + [0] * 10 + [6] * 6
 # Half-sine hump: fundamental + even harmonics, bubbly.

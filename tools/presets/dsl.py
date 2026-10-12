@@ -13,12 +13,19 @@ baseline, plus four macro routing lists. Conventions:
   skew and the sound the designer heard. What the preset sounds like on load is the base moved
   by every macro at its stored position (``macro1..4``, default 62/30/45/20); the ``--report``
   option of generate.py prints those effective values.
+* DIRT is stored at 0 % on every factory preset: the preset loads exactly as designed (a
+  crusher wired for DIRT sits at its base, transparent 16 bit / 48 kHz unless the preset is
+  crushed by design) and turning DIRT up adds the grit. A preset written with DIRT at another
+  position (the 30 % default included) is *rebased*: every DIRT target other than the crusher
+  moves to the value it had at that position (so detune and noise sound the same on load) and
+  the stored DIRT becomes 0. Only the init preset 014 keeps the parameter defaults (DIRT 30 %,
+  which there only adds unison detune: its crusher is off).
 """
 
 import math
 
 import waves
-from pixl_params import KEYS, SPECS, apply_macros, normalize, sanitize, to_plain
+from pixl_params import KEYS, SPECS, apply_macros, denormalize, normalize, sanitize, to_plain
 
 CATEGORY_RANGES = {
     "LEAD": (1, 32),
@@ -31,6 +38,9 @@ CATEGORY_RANGES = {
 ICON_TAG = {"p12": "PULSE", "p50": "PULSE", "tri": "TRI", "wav": "WAVE", "noi": "NOISE"}
 AUTHOR = "PIXL Factory"
 DEFAULT_MACRO_VALUES = (62, 30, 45, 20)
+DIRT = 1  # macro index
+# DIRT targets that are not rebased (the crusher must sit at its base when DIRT is at 0).
+DIRT_CRUSHER_KEYS = ("crush_bits", "crush_rate")
 
 # ------------------------------------------------------------------------------------------
 # Parts
@@ -253,6 +263,22 @@ class Preset:
         self.wave = list(wave_ram)
         self.macro_specs = [list(m1), list(m2), list(m3), list(m4)]
         self.routings = []
+        self._rebase_dirt()
+
+    def _rebase_dirt(self):
+        """Store DIRT at 0 % without changing what its non-crusher targets do on load."""
+        position = sanitize("macro2", to_plain("macro2", self.params["macro2"])) / 100.0
+        if position <= 0.0:
+            return
+        for key, target in self.macro_specs[DIRT]:
+            if key in DIRT_CRUSHER_KEYS or key not in SPECS:
+                continue
+            base = sanitize(key, to_plain(key, self.params[key]))
+            to = sanitize(key, to_plain(key, target))
+            norm = normalize(key, base) + position * (normalize(key, to) - normalize(key, base))
+            value = denormalize(key, norm)
+            self.params[key] = round(value, 1) if SPECS[key].kind == "float" else int(value)
+        self.params["macro2"] = 0
 
     # -- resolution ------------------------------------------------------------------------
 
@@ -301,6 +327,7 @@ class Preset:
 # ------------------------------------------------------------------------------------------
 
 CHIP_DUTIES = (12.5, 25.0, 50.0, 75.0)
+CHIP_NAMES = ("NES", "GB", "FREE")
 
 
 def snap_duty(duty):

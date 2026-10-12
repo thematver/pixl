@@ -3,9 +3,16 @@
 //! parameter changes through `flush`, state save/load including PIXL's persistent fields,
 //! damaged states, and the parameter rescan the host gets after a state load.
 
+mod common;
+
+use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
-    clap_event_header, clap_event_param_value, clap_input_events, clap_output_events, CLAP_CORE_EVENT_SPACE_ID,
-    CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_note_expression, clap_event_param_value,
+    clap_input_events, clap_output_events, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_EXPRESSION,
+    CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
+};
+use clap_sys::ext::note_ports::{
+    clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
 };
 use clap_sys::ext::params::{
     clap_host_params, clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_STEPPED,
@@ -16,6 +23,7 @@ use clap_sys::ext::thread_check::{clap_host_thread_check, CLAP_EXT_THREAD_CHECK}
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
+use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use pixl_core::{ParamId, ParamKind, PARAMS, PARAM_COUNT};
@@ -457,4 +465,201 @@ fn host_is_told_to_rescan_values_after_a_state_load() {
     assert_eq!(VALUE_RESCANS.load(Ordering::SeqCst), before + 2);
     b.on_main_thread();
     assert_eq!(VALUE_RESCANS.load(Ordering::SeqCst), before + 2, "exactly once");
+}
+
+/// One input event of a processing block (each variant starts with its `clap_event_header`).
+enum BlockEvent {
+    Note(clap_event_note),
+    Expression(clap_event_note_expression),
+    Midi(clap_event_midi),
+}
+
+impl BlockEvent {
+    fn header(&self) -> *const clap_event_header {
+        match self {
+            BlockEvent::Note(e) => &e.header,
+            BlockEvent::Expression(e) => &e.header,
+            BlockEvent::Midi(e) => &e.header,
+        }
+    }
+}
+
+fn header(size: usize, time: u32, type_: u16) -> clap_event_header {
+    clap_event_header { size: size as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_, flags: 0 }
+}
+
+/// A note-on exactly as clap-wrapper's AUv2 layer emits it in the CLAP dialect.
+fn wrapper_note_on(time: u32, key: i16, velocity: f64) -> BlockEvent {
+    BlockEvent::Note(clap_event_note {
+        header: header(std::mem::size_of::<clap_event_note>(), time, CLAP_EVENT_NOTE_ON),
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key,
+        velocity,
+    })
+}
+
+/// A note expression as clap-wrapper's AUv2 layer emits it: pitch bend → TUNING with
+/// `(bend14 − 8192) / 8192 × 2` semitones, channel pressure → PRESSURE `value / 127`, both with
+/// key −1 and note id −1 (`key` ≥ 0 makes it per-note, like poly pressure).
+fn wrapper_expression(time: u32, expression_id: i32, key: i16, value: f64) -> BlockEvent {
+    BlockEvent::Expression(clap_event_note_expression {
+        header: header(std::mem::size_of::<clap_event_note_expression>(), time, CLAP_EVENT_NOTE_EXPRESSION),
+        expression_id,
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key,
+        value,
+    })
+}
+
+fn wrapper_bend(time: u32, bend14: i32) -> BlockEvent {
+    wrapper_expression(time, CLAP_NOTE_EXPRESSION_TUNING, -1, (bend14 - 8192) as f64 / 8192.0 * 2.0)
+}
+
+fn midi(time: u32, data: [u8; 3]) -> BlockEvent {
+    BlockEvent::Midi(clap_event_midi {
+        header: header(std::mem::size_of::<clap_event_midi>(), time, CLAP_EVENT_MIDI),
+        port_index: 0,
+        data,
+    })
+}
+
+impl Instance {
+    fn note_ports(&self) -> *const clap_plugin_note_ports {
+        unsafe {
+            ((*self.plugin).get_extension.unwrap())(self.plugin, CLAP_EXT_NOTE_PORTS.as_ptr())
+                as *const clap_plugin_note_ports
+        }
+    }
+
+    fn activate(&self, sample_rate: f64, max_frames: u32) {
+        unsafe {
+            assert!(((*self.plugin).activate.unwrap())(self.plugin, sample_rate, 1, max_frames));
+            assert!(((*self.plugin).start_processing.unwrap())(self.plugin));
+        }
+    }
+
+    fn deactivate(&self) {
+        unsafe {
+            ((*self.plugin).stop_processing.unwrap())(self.plugin);
+            ((*self.plugin).deactivate.unwrap())(self.plugin);
+        }
+    }
+
+    /// One stereo `process` call of `frames` frames with `events`; returns the left channel.
+    fn process(&self, frames: u32, events: &[BlockEvent]) -> Vec<f32> {
+        unsafe extern "C" fn size(list: *const clap_input_events) -> u32 {
+            let events: &&[BlockEvent] = &*((*list).ctx as *const &[BlockEvent]);
+            events.len() as u32
+        }
+        unsafe extern "C" fn get(list: *const clap_input_events, index: u32) -> *const clap_event_header {
+            let events: &&[BlockEvent] = &*((*list).ctx as *const &[BlockEvent]);
+            events[index as usize].header()
+        }
+        unsafe extern "C" fn push(_list: *const clap_output_events, _e: *const clap_event_header) -> bool {
+            true
+        }
+        let list: &[BlockEvent] = events;
+        let input = clap_input_events { ctx: &list as *const _ as *mut c_void, size: Some(size), get: Some(get) };
+        let output = clap_output_events { ctx: null_mut(), try_push: Some(push) };
+        let (mut l, mut r) = (vec![0.0f32; frames as usize], vec![0.0f32; frames as usize]);
+        let mut channels = [l.as_mut_ptr(), r.as_mut_ptr()];
+        let mut out = clap_audio_buffer {
+            data32: channels.as_mut_ptr(),
+            data64: null_mut(),
+            channel_count: 2,
+            latency: 0,
+            constant_mask: 0,
+        };
+        let process = clap_process {
+            steady_time: -1,
+            frames_count: frames,
+            transport: null(),
+            audio_inputs: null(),
+            audio_outputs: &mut out,
+            audio_inputs_count: 0,
+            audio_outputs_count: 1,
+            in_events: &input,
+            out_events: &output,
+        };
+        unsafe { ((*self.plugin).process.unwrap())(self.plugin, &process) };
+        l
+    }
+}
+
+#[test]
+fn pitch_wheel_and_channel_pressure_work_through_clap_wrappers_auv2_translation() {
+    // PLG-01 / SPEC §8: Logic (AUv2 via clap-wrapper) must bend and add aftertouch vibrato.
+    let _guard = ENTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let inst = Instance::new();
+    // The note port still speaks both dialects but prefers raw MIDI, so clap-wrapper forwards
+    // bend and pressure as MIDI instead of translating them into channel-wide expressions.
+    unsafe {
+        let ports = inst.note_ports();
+        assert!(!ports.is_null());
+        assert_eq!(((*ports).count.unwrap())(inst.plugin, true), 1);
+        let mut info: clap_note_port_info = std::mem::zeroed();
+        assert!(((*ports).get.unwrap())(inst.plugin, 0, true, &mut info));
+        assert_eq!(info.preferred_dialect, CLAP_NOTE_DIALECT_MIDI);
+        assert_eq!(info.supported_dialects & (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI), 3);
+    }
+    // A clean FREE patch (exact pitch): wave channel only, no pitch effects, ±2 st bend range.
+    let set = |key: &str, plain: f64| (inst.info(key).id, plain);
+    inst.flush(&[
+        set("chip", 2.0),
+        set("sweep_on", 0.0),
+        set("vib_on", 0.0),
+        set("glide_on", 0.0),
+        set("uni_on", 0.0),
+        set("arp_on", 0.0),
+        set("crush_on", 0.0),
+        set("echo_on", 0.0),
+    ]);
+    assert_eq!(inst.text(inst.info("pb_range").id, inst.value(inst.info("pb_range").id)), "+2 st");
+    const SR: f32 = 48_000.0;
+    const BLOCK: u32 = 480;
+    inst.activate(SR as f64, BLOCK);
+    // Renders `blocks` blocks, `first` delivered in the first one.
+    let run = |blocks: usize, first: Vec<BlockEvent>| {
+        let mut out = inst.process(BLOCK, &first);
+        for _ in 1..blocks {
+            out.extend(inst.process(BLOCK, &[]));
+        }
+        out
+    };
+    // Pitch of the steady last two thirds of a segment.
+    let pitch_of = |x: &[f32]| common::pitch(&x[x.len() / 3..], SR, 450.0);
+    // A4, then the wheel fully up as a channel-wide TUNING expression (CLAP dialect).
+    let mut segments = vec![("A4", run(30, vec![wrapper_note_on(0, 69, 0.8)]), 440.0)];
+    segments.push(("wheel up (expression)", run(30, vec![wrapper_bend(17, 16383)]), 493.883));
+    // The same wheel position delivered both as raw MIDI and as an expression: one bend, not two.
+    let both = vec![midi(3, [0xE0, 0x7F, 0x7F]), wrapper_bend(3, 16383)];
+    segments.push(("wheel up (MIDI + expression)", run(30, both), 493.883));
+    segments.push(("wheel centre (MIDI)", run(30, vec![midi(0, [0xE0, 0x00, 0x40])]), 440.0));
+    // A per-note tuning expression is not the channel's wheel.
+    let per_note = vec![wrapper_expression(0, CLAP_NOTE_EXPRESSION_TUNING, 69, 1.0)];
+    segments.push(("per-note tuning", run(30, per_note), 440.0));
+    for (name, x, hz) in &segments {
+        let f = pitch_of(x);
+        assert!(common::cents(f, *hz).abs() < 3.0, "{name}: {f:.2} Hz, expected {hz} Hz");
+    }
+    // Channel pressure (expression and raw MIDI) adds the +50 c aftertouch vibrato.
+    let spread = |x: &[f32]| {
+        let w = (SR * 0.03) as usize;
+        let f: Vec<f32> = x.chunks(w).filter(|c| c.len() == w).map(|c| common::acf_pitch(c, SR, 440.0)).collect();
+        f.iter().cloned().fold(f32::MIN, f32::max) / f.iter().cloned().fold(f32::MAX, f32::min)
+    };
+    let calm = spread(&segments[4].1);
+    let pressed = spread(&run(60, vec![wrapper_expression(0, CLAP_NOTE_EXPRESSION_PRESSURE, -1, 1.0)])[9_600..]);
+    let released = spread(&run(60, vec![wrapper_expression(0, CLAP_NOTE_EXPRESSION_PRESSURE, -1, 0.0)])[9_600..]);
+    let pressed_midi = spread(&run(60, vec![midi(0, [0xD0, 0x7F, 0x00])])[9_600..]);
+    println!(
+        "pitch spread: calm {calm:.4}, pressure {pressed:.4}, released {released:.4}, MIDI pressure {pressed_midi:.4}"
+    );
+    assert!(calm < 1.003 && released < 1.003, "no vibrato without pressure: {calm} {released}");
+    assert!(pressed > 1.02 && pressed_midi > 1.02, "aftertouch vibrato: {pressed} {pressed_midi}");
+    inst.deactivate();
 }
